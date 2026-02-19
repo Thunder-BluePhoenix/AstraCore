@@ -1,0 +1,33 @@
+// Rotation Gate Showcase
+//
+// Demonstrates parametric rotation gates using AQL constants.
+//
+// Circuit effect:
+//   RX(PI) on q0  → probability 1 in |1⟩  (same as X gate)
+//   RY(PI_2) on q1 → 50/50 superposition
+//   RZ(PI_4) on q2 → phase rotation (T gate equivalent)
+//   H·RZ(PI)·H on q3 → equivalent to X gate via phase kickback
+//
+// Run: astracore run examples/rotations.aql
+
+QREG 4
+
+BARRIER       // ── Rx(π) = X gate (up to global phase) ──
+RX 0 PI
+MEASURE 0     // expect 1
+
+BARRIER       // ── Ry(π/2) = equal superposition ──
+RY 1 PI_2
+MEASURE 1     // expect 0 or 1 with equal probability (50/50)
+
+BARRIER       // ── Rz(π/4) = T gate phase rotation ──
+H 2
+RZ 2 PI_4     // rotates phase of |1⟩ component by π/4
+H 2
+MEASURE 2     // after H·Rz(π/4)·H — biased toward |1⟩
+
+BARRIER       // ── Full X via H·Rz(π)·H ──
+H 3
+RZ 3 PI
+H 3
+MEASURE 3     // expect 1  (H·Z·H = X)

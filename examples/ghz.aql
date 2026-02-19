@@ -1,0 +1,16 @@
+// GHZ State — (|000⟩ + |111⟩) / √2
+//
+// Greenberger–Horne–Zeilinger state: 3-qubit maximal entanglement.
+// Every measurement gives either all-0 or all-1. Never mixed.
+//
+// Run: astracore run examples/ghz.aql
+
+QREG 3
+
+H 0           // superposition on q0
+CNOT 0 1      // entangle q1
+CNOT 0 2      // entangle q2
+
+BARRIER       // ── measurement boundary ──
+
+MEASURE_ALL

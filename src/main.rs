@@ -1,207 +1,247 @@
+use astracore::compiler;
 use astracore::core::Simulator;
-use std::f64::consts::PI;
 
 fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    print_banner();
+
+    match args.get(1).map(String::as_str) {
+        None | Some("demo")           => run_all_demos(),
+        Some("run")                   => cli_run(args.get(2).map(String::as_str)),
+        Some("help") | Some("--help") => print_help(),
+        Some(unknown) => {
+            eprintln!("Unknown command '{}'. Run 'astracore help' for usage.", unknown);
+            std::process::exit(1);
+        }
+    }
+}
+
+// ── CLI ───────────────────────────────────────────────────────────────────
+
+fn cli_run(path: Option<&str>) {
+    let path = match path {
+        Some(p) => p,
+        None => {
+            eprintln!("Usage: astracore run <file.aql>");
+            std::process::exit(1);
+        }
+    };
+
+    let source = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => { eprintln!("Cannot read '{}': {}", path, e); std::process::exit(1); }
+    };
+
+    println!("━━━ AstraCore AQL Runner ━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!("File: {path}\n");
+
+    let program = match compiler::parse_source(&source) {
+        Ok(p) => p,
+        Err(e) => { eprintln!("{e}"); std::process::exit(1); }
+    };
+
+    println!("Program IR:");
+    println!("  QREG {}", program.num_qubits);
+    for instr in &program.instructions {
+        println!("  {instr}");
+    }
+    println!();
+    println!(
+        "Circuit: {} gate(s) | {} measurement(s) | {} qubit(s)\n",
+        program.gate_count, program.measure_count, program.num_qubits
+    );
+
+    let result = match compiler::execute(&program) {
+        Ok(r) => r,
+        Err(e) => { eprintln!("Runtime error: {e}"); std::process::exit(1); }
+    };
+
+    let display_probs = result.pre_measurement_probs.as_deref()
+        .unwrap_or(&result.final_probabilities);
+    let label = if result.pre_measurement_probs.is_some() {
+        "Pre-measurement state"
+    } else {
+        "Final state (no measurements)"
+    };
+
+    println!("{label}:");
+    for (lbl, prob) in result.significant_states(display_probs, 1e-6) {
+        println!("  |{lbl}⟩  {prob:.6}");
+    }
+    println!();
+
+    if !result.measurements.is_empty() {
+        println!("Measurement results:");
+        for m in &result.measurements {
+            println!("  q{}  →  {}", m.qubit, m.outcome as u8);
+        }
+        if let Some(bs) = result.bitstring() {
+            println!("  Bitstring (q0…qN): {bs}");
+        }
+    }
+}
+
+fn print_banner() {
     println!("╔══════════════════════════════════════════════╗");
     println!("║          AstraCore v0.1.0                    ║");
     println!("║  High-Performance Quantum Simulation Engine  ║");
-    println!("╚══════════════════════════════════════════════╝\n");
+    println!("╚══════════════════════════════════════════════╝");
+    println!();
+}
 
+fn print_help() {
+    println!("Usage: astracore [COMMAND] [ARGS]\n");
+    println!("Commands:");
+    println!("  demo            Run built-in demonstration circuits");
+    println!("  run <file.aql>  Parse and execute an AQL program");
+    println!("  help            Show this message\n");
+    println!("AQL Instructions:");
+    println!("  QREG <n>              Declare n qubits (must be first)");
+    println!("  H|X|Y|Z|S|T <q>       Single-qubit gates");
+    println!("  RX|RY|RZ <q> <θ>      Rotation gates (radians)");
+    println!("  PHASE <q> <θ>         Phase gate");
+    println!("  CNOT|CZ|SWAP <c> <t>  Two-qubit gates");
+    println!("  CCX <c0> <c1> <t>     Toffoli (CCNOT) gate");
+    println!("  MEASURE <q>           Measure qubit q");
+    println!("  MEASURE_ALL           Measure all qubits");
+    println!("  BARRIER               Visual separator (no-op)\n");
+    println!("Constants: PI, TAU, PI_2, PI_4, PI_8, -PI, -PI_2, -PI_4");
+    println!("Comments:  // or #");
+}
+
+// ── Demos (Rust API) ──────────────────────────────────────────────────────
+
+fn run_all_demos() {
     demo_single_qubit();
     demo_bell_state();
     demo_ghz_state();
-    demo_quantum_teleportation();
-    demo_deutsch_algorithm();
-    demo_phase_kickback();
+    demo_teleportation();
+    demo_deutsch();
+    demo_aql_pipeline();
 }
-
-// ── Demo 1: Single Qubit ─────────────────────────────────────────────────────
 
 fn demo_single_qubit() {
     println!("━━━ Demo 1: Single Qubit Basics ━━━━━━━━━━━━━━━━━");
-
     let mut sim = Simulator::new(1);
-
-    println!("Initial state |0⟩:");
+    println!("Initial |0⟩:");
     sim.print_state();
-
     sim.h(0);
-    println!("After H gate (superposition):");
+    println!("After H (superposition):");
     sim.print_state();
-
-    sim.z(0);
-    println!("After Z gate (phase flip on |1⟩ amplitude):");
+    sim.z(0).h(0);
+    println!("After H·Z·H = X (should be |1⟩):");
     sim.print_state();
-
-    sim.h(0);
-    println!("After second H gate (H·Z·H = X gate, should be |1⟩):");
-    sim.print_state();
-
     println!();
 }
-
-// ── Demo 2: Bell State ───────────────────────────────────────────────────────
 
 fn demo_bell_state() {
-    println!("━━━ Demo 2: Bell State (|Φ+⟩) ━━━━━━━━━━━━━━━━━━━");
-    println!("Circuit: H(q0) → CNOT(q0, q1)");
-
+    println!("━━━ Demo 2: Bell State |Φ+⟩ ━━━━━━━━━━━━━━━━━━━━━");
     let mut sim = Simulator::new(2);
     sim.h(0).cnot(0, 1);
-
-    println!("State after circuit:");
     sim.print_state();
 
-    let probs = sim.probabilities();
-    println!("Probabilities:");
-    println!("  P(|00⟩) = {:.4}", probs[0]);
-    println!("  P(|01⟩) = {:.4}", probs[1]);
-    println!("  P(|10⟩) = {:.4}", probs[2]);
-    println!("  P(|11⟩) = {:.4}", probs[3]);
-
-    // Run 1000 shots to verify distribution
-    println!("\nSampling 1000 shots:");
     let mut counts = [0u32; 4];
     for _ in 0..1000 {
-        let mut sim_shot = Simulator::new(2);
-        sim_shot.h(0).cnot(0, 1);
-        let results = sim_shot.measure_all();
-        let idx = (results[1] as usize) << 1 | results[0] as usize;
-        counts[idx] += 1;
+        let mut s = Simulator::new(2);
+        s.h(0).cnot(0, 1);
+        let r = s.measure_all();
+        counts[(r[1] as usize) << 1 | r[0] as usize] += 1;
     }
-    println!("  |00⟩: {} ({:.1}%)", counts[0], counts[0] as f64 / 10.0);
-    println!("  |01⟩: {} ({:.1}%)", counts[1], counts[1] as f64 / 10.0);
-    println!("  |10⟩: {} ({:.1}%)", counts[2], counts[2] as f64 / 10.0);
-    println!("  |11⟩: {} ({:.1}%)", counts[3], counts[3] as f64 / 10.0);
+    println!("Sampling 1000 shots:  |00⟩={} |11⟩={}", counts[0], counts[3]);
     println!();
 }
-
-// ── Demo 3: GHZ State ────────────────────────────────────────────────────────
 
 fn demo_ghz_state() {
     println!("━━━ Demo 3: GHZ State (3 qubits) ━━━━━━━━━━━━━━━━");
-    println!("Circuit: H(q0) → CNOT(q0,q1) → CNOT(q0,q2)");
-    println!("Creates: (|000⟩ + |111⟩) / √2");
-
     let mut sim = Simulator::new(3);
     sim.h(0).cnot(0, 1).cnot(0, 2);
-
-    println!("State after circuit:");
     sim.print_state();
 
-    println!("Sampling 1000 shots:");
-    let mut count_000 = 0u32;
-    let mut count_111 = 0u32;
-    let mut count_other = 0u32;
+    let (mut c000, mut c111, mut other) = (0u32, 0u32, 0u32);
     for _ in 0..1000 {
         let mut s = Simulator::new(3);
         s.h(0).cnot(0, 1).cnot(0, 2);
         let r = s.measure_all();
-        match (r[2], r[1], r[0]) {
-            (false, false, false) => count_000 += 1,
-            (true,  true,  true)  => count_111 += 1,
-            _ => count_other += 1,
+        match (r[0], r[1], r[2]) {
+            (false, false, false) => c000 += 1,
+            (true,  true,  true)  => c111 += 1,
+            _                     => other += 1,
         }
     }
-    println!("  |000⟩:  {} ({:.1}%)", count_000, count_000 as f64 / 10.0);
-    println!("  |111⟩:  {} ({:.1}%)", count_111, count_111 as f64 / 10.0);
-    println!("  other:  {} (expected 0)", count_other);
+    println!("Sampling 1000 shots:  |000⟩={c000}  |111⟩={c111}  other={other}");
     println!();
 }
 
-// ── Demo 4: Quantum Teleportation ────────────────────────────────────────────
-
-fn demo_quantum_teleportation() {
+fn demo_teleportation() {
     println!("━━━ Demo 4: Quantum Teleportation ━━━━━━━━━━━━━━━");
-    println!("Teleporting state |+⟩ = H|0⟩ from qubit 0 to qubit 2");
-    println!("Qubits: [message(0) | alice(1) | bob(2)]");
-
-    // We verify by checking output probabilities instead of measuring
-    // (measuring destroys the state we want to verify)
+    println!("Teleporting |+⟩ from q0 to q2.  [msg|alice|bob]");
     let mut sim = Simulator::new(3);
-
-    // Prepare message qubit in |+⟩
     sim.h(0);
-
-    // Create Bell pair between alice (q1) and bob (q2)
     sim.h(1).cnot(1, 2);
-
-    // Alice's operations
-    sim.cnot(0, 1);
-    sim.h(0);
-
-    // Measure alice's qubits
+    sim.cnot(0, 1).h(0);
     let m0 = sim.measure(0);
     let m1 = sim.measure(1);
-
-    // Bob's corrections based on alice's measurement results
     if m1 { sim.x(2); }
     if m0 { sim.z(2); }
-
-    // Bob's qubit should now be in |+⟩ = (|0⟩ + |1⟩)/√2
-    let p_one = sim.qubit_probability_one(2);
-    println!("Bob's qubit P(|1⟩) = {:.4} (expected ~0.5000)", p_one);
-    println!(
-        "Teleportation: {}",
-        if (p_one - 0.5).abs() < 0.01 { "SUCCESS" } else { "FAILED" }
-    );
+    let p1 = sim.qubit_probability_one(2);
+    println!("Bob P(|1⟩) = {p1:.4}  →  {}", if (p1 - 0.5).abs() < 0.01 { "SUCCESS" } else { "FAILED" });
     println!();
 }
 
-// ── Demo 5: Deutsch Algorithm ────────────────────────────────────────────────
-
-fn demo_deutsch_algorithm() {
+fn demo_deutsch() {
     println!("━━━ Demo 5: Deutsch Algorithm ━━━━━━━━━━━━━━━━━━━");
-    println!("Determines if f(x) is constant or balanced in ONE query.\n");
+    println!("One oracle query reveals constant vs balanced.\n");
 
-    // Test with constant f(x) = 0 → oracle is identity
-    {
-        println!("  f(x) = 0 (constant):");
+    let run = |oracle: fn(&mut Simulator)| {
         let mut sim = Simulator::new(2);
-        sim.x(1);       // ancilla to |1⟩
-        sim.h(0).h(1);  // superposition
-        // Constant-0 oracle: do nothing (U_f acts as identity on ancilla)
+        sim.x(1).h(0).h(1);
+        oracle(&mut sim);
         sim.h(0);
-        let result = sim.measure(0);
-        println!("  Measured q0 = {} (0 = constant, 1 = balanced)", result as u8);
-    }
-
-    // Test with balanced f(x) = x → oracle is CNOT
-    {
-        println!("  f(x) = x (balanced):");
-        let mut sim = Simulator::new(2);
-        sim.x(1);
-        sim.h(0).h(1);
-        sim.cnot(0, 1); // balanced oracle
-        sim.h(0);
-        let result = sim.measure(0);
-        println!("  Measured q0 = {} (0 = constant, 1 = balanced)\n", result as u8);
-    }
+        sim.measure(0)
+    };
+    println!("  f(x)=0 (constant): q0={} (expect 0)", run(|_| {}) as u8);
+    println!("  f(x)=x (balanced): q0={} (expect 1)", run(|s| { s.cnot(0, 1); }) as u8);
+    println!();
 }
 
-// ── Demo 6: Phase Kickback ───────────────────────────────────────────────────
+fn demo_aql_pipeline() {
+    println!("━━━ Demo 6: AQL Compiler Pipeline ━━━━━━━━━━━━━━━");
 
-fn demo_phase_kickback() {
-    println!("━━━ Demo 6: Phase Kickback (Rz rotation) ━━━━━━━━");
-    println!("Demonstrates phase accumulation via controlled rotation.\n");
+    let aql = "\
+// GHZ state via AQL
+QREG 3
+H 0
+CNOT 0 1
+CNOT 0 2
+BARRIER       // visual separator
+MEASURE_ALL
+";
 
-    let angle = PI / 4.0; // T gate angle
-    let mut sim = Simulator::new(2);
-    sim.h(0);           // control in superposition
-    sim.x(1);           // target in |1⟩ (eigenstate)
-    sim.h(1);
-    // Controlled-T: apply phase e^(iπ/4) to |1⟩ component of control
-    // Simulated via: if control=1, apply T to target
-    // (Full controlled-T not in MVP, demonstrate with direct T)
-    sim.t(0);
-    sim.h(0);
+    println!("Source:");
+    for line in aql.lines() {
+        if !line.trim().is_empty() {
+            println!("  {line}");
+        }
+    }
+    println!();
 
-    println!("After H-T-H on q0 (equivalent to Rz(π/4)):");
-    let p1 = sim.qubit_probability_one(0);
-    println!("  P(q0=1) = {:.6}", p1);
-    println!("  Expected deviation from 0.5: {:.6}", (p1 - 0.5).abs());
-
-    let expected_deviation = ((angle / 2.0).sin()).powi(2);
-    println!("  Predicted: {:.6}", expected_deviation);
+    match compiler::run(aql) {
+        Ok(result) => {
+            let probs = result.pre_measurement_probs.as_ref().unwrap();
+            println!("Pre-measurement state:");
+            for (label, prob) in result.significant_states(probs, 1e-6) {
+                println!("  |{label}⟩  {prob:.4}");
+            }
+            println!();
+            println!("Measurements:");
+            for m in &result.measurements {
+                println!("  q{}  →  {}", m.qubit, m.outcome as u8);
+            }
+            if let Some(bs) = result.bitstring() {
+                println!("  Bitstring: {bs}");
+            }
+        }
+        Err(e) => eprintln!("AQL Error: {e}"),
+    }
     println!();
 }

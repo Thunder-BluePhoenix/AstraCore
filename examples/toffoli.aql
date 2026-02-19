@@ -1,0 +1,30 @@
+// Toffoli Gate (CCNOT) — Quantum AND Gate
+//
+// Flips target qubit only when BOTH control qubits are |1⟩.
+// This is a universal reversible gate for classical computation.
+//
+// Truth table:
+//   c0 c1 t → c0 c1 t'
+//    0  0  0 →  0  0  0
+//    0  1  0 →  0  1  0
+//    1  0  0 →  1  0  0
+//    1  1  0 →  1  1  1   ← target flipped
+//
+// This circuit sets c0=1, c1=1, t=0 then applies CCX.
+// Expected: all three qubits = 1  →  bitstring "111"
+//
+// Run: astracore run examples/toffoli.aql
+
+QREG 3
+
+X 0           // c0 = |1⟩
+X 1           // c1 = |1⟩
+              // t  = |0⟩  (default)
+
+BARRIER
+
+CCX 0 1 2     // Toffoli: flip q2 because q0=1 and q1=1
+
+BARRIER
+
+MEASURE_ALL   // expect: q0=1, q1=1, q2=1  →  bitstring "111"

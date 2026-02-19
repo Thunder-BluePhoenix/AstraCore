@@ -1,0 +1,14 @@
+// Bell State — |Φ+⟩ = (|00⟩ + |11⟩) / √2
+//
+// The simplest maximally entangled 2-qubit state.
+// Measuring either qubit always yields a random result,
+// but both qubits always agree.
+//
+// Run: astracore run examples/bell.aql
+
+QREG 2
+
+H 0           // put q0 into superposition
+CNOT 0 1      // entangle q1 with q0
+
+MEASURE_ALL

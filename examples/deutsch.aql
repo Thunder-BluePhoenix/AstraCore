@@ -1,0 +1,28 @@
+// Deutsch Algorithm — Balanced Oracle
+//
+// Determines in ONE query whether f(x) is constant or balanced.
+//
+// This circuit implements f(x) = x  (balanced oracle via CNOT).
+// Expected result: q0 = 1  (balanced)
+//
+// For constant oracle (f(x)=0), remove the CNOT line.
+// Expected result: q0 = 0  (constant)
+//
+// Run: astracore run examples/deutsch.aql
+
+QREG 2
+
+X 1           // ancilla to |1⟩
+H 0           // query qubit into superposition
+H 1           // ancilla into |-⟩ = (|0⟩ - |1⟩)/√2
+
+BARRIER
+
+CNOT 0 1      // balanced oracle: f(x) = x
+              // Remove this line for constant oracle f(x) = 0
+
+BARRIER
+
+H 0           // interfere
+
+MEASURE 0     // 0 = constant, 1 = balanced

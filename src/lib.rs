@@ -22,4 +22,5 @@
 //! let results = sim.measure_all();
 //! ```
 
+pub mod compiler;
 pub mod core;
