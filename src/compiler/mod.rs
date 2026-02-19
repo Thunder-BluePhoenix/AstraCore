@@ -1,15 +1,14 @@
 /// AQL — Astra Quantum Language compiler pipeline.
 ///
-/// Pipeline: source text → Lexer → Parser → IR → Executor → Result
+/// Pipeline: source text → Lexer → Parser → IR → Runtime Executor → Result
 ///
 /// Each stage is a separate module with a clean boundary.
 /// Errors carry source line numbers for precise diagnostics.
-pub mod executor;
 pub mod ir;
 pub mod lexer;
 pub mod parser;
 
-pub use executor::{execute, ExecutionResult, MeasurementRecord};
+pub use crate::runtime::{execute, ExecutionResult, MeasurementRecord};
 pub use ir::{Instruction, Program};
 pub use parser::parse;
 
@@ -48,5 +47,5 @@ pub fn parse_source(source: &str) -> Result<Program, AqlError> {
 /// One-shot: lex + parse + execute. Returns the execution result.
 pub fn run(source: &str) -> Result<ExecutionResult, AqlError> {
     let program = parse_source(source)?;
-    executor::execute(&program)
+    crate::runtime::execute(&program)
 }

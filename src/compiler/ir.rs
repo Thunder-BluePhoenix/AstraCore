@@ -38,6 +38,16 @@ pub enum Instruction {
 
     // ── Structural (no quantum effect) ──────────────────────────────────
     Barrier,
+
+    // ── Phase 4: Hybrid control flow ─────────────────────────────────────
+    /// Define a named jump target. No quantum effect.
+    Label(String),
+    /// Unconditional jump to a label.
+    Goto { label: String },
+    /// Jump to `label` if qubit `qubit` last measured as |1⟩.
+    GotoIf { qubit: usize, label: String },
+    /// Jump to `label` if qubit `qubit` last measured as |0⟩.
+    GotoIfNot { qubit: usize, label: String },
 }
 
 impl Instruction {
@@ -61,12 +71,20 @@ impl Instruction {
             Self::Measure(_)        => "MEASURE",
             Self::MeasureAll        => "MEASURE_ALL",
             Self::Barrier           => "BARRIER",
+            Self::Label(_)          => "LABEL",
+            Self::Goto { .. }       => "GOTO",
+            Self::GotoIf { .. }     => "IF",
+            Self::GotoIfNot { .. }  => "IFNOT",
         }
     }
 
-    /// True if this instruction applies a quantum gate (not a directive or measurement).
+    /// True if this instruction applies a quantum gate.
     pub fn is_gate(&self) -> bool {
-        !matches!(self, Self::Measure(_) | Self::MeasureAll | Self::Barrier)
+        matches!(self,
+            Self::H(_) | Self::X(_) | Self::Y(_) | Self::Z(_) | Self::S(_) | Self::T(_)
+            | Self::Rx { .. } | Self::Ry { .. } | Self::Rz { .. } | Self::Phase { .. }
+            | Self::Cnot { .. } | Self::Cz { .. } | Self::Swap { .. } | Self::Toffoli { .. }
+        )
     }
 
     /// True if this instruction is a measurement.
@@ -74,19 +92,32 @@ impl Instruction {
         matches!(self, Self::Measure(_) | Self::MeasureAll)
     }
 
-    /// Qubit indices touched by this instruction (for future optimizer use).
+    /// True if this instruction is a control-flow directive.
+    pub fn is_control_flow(&self) -> bool {
+        matches!(self, Self::Label(_) | Self::Goto { .. } | Self::GotoIf { .. } | Self::GotoIfNot { .. })
+    }
+
+    /// Qubit indices referenced by this instruction.
+    /// Includes the condition qubit in GotoIf/GotoIfNot (data dependency).
     pub fn qubits(&self) -> Vec<usize> {
         match self {
             Self::H(q) | Self::X(q) | Self::Y(q) | Self::Z(q)
-            | Self::S(q) | Self::T(q) | Self::Measure(q)       => vec![*q],
+            | Self::S(q) | Self::T(q) | Self::Measure(q)           => vec![*q],
             Self::Rx { qubit, .. } | Self::Ry { qubit, .. }
-            | Self::Rz { qubit, .. } | Self::Phase { qubit, .. } => vec![*qubit],
+            | Self::Rz { qubit, .. } | Self::Phase { qubit, .. }   => vec![*qubit],
             Self::Cnot { control, target }
-            | Self::Cz  { control, target }                      => vec![*control, *target],
-            Self::Swap { qubit_a, qubit_b }                      => vec![*qubit_a, *qubit_b],
-            Self::Toffoli { control0, control1, target }         => vec![*control0, *control1, *target],
-            Self::MeasureAll | Self::Barrier                     => vec![],
+            | Self::Cz  { control, target }                         => vec![*control, *target],
+            Self::Swap { qubit_a, qubit_b }                         => vec![*qubit_a, *qubit_b],
+            Self::Toffoli { control0, control1, target }            => vec![*control0, *control1, *target],
+            Self::GotoIf { qubit, .. } | Self::GotoIfNot { qubit, .. } => vec![*qubit],
+            Self::MeasureAll | Self::Barrier
+            | Self::Label(_) | Self::Goto { .. }                    => vec![],
         }
+    }
+
+    /// True if the program has any control-flow instructions.
+    pub fn program_has_control_flow(instructions: &[Self]) -> bool {
+        instructions.iter().any(|i| i.is_control_flow())
     }
 }
 
@@ -110,6 +141,10 @@ impl std::fmt::Display for Instruction {
             Self::Measure(q)                              => write!(f, "MEASURE {q}"),
             Self::MeasureAll                              => write!(f, "MEASURE_ALL"),
             Self::Barrier                                 => write!(f, "BARRIER"),
+            Self::Label(name)                             => write!(f, "LABEL {name}"),
+            Self::Goto { label }                          => write!(f, "GOTO {label}"),
+            Self::GotoIf { qubit, label }                 => write!(f, "IF {qubit} GOTO {label}"),
+            Self::GotoIfNot { qubit, label }              => write!(f, "IFNOT {qubit} GOTO {label}"),
         }
     }
 }
@@ -206,6 +241,33 @@ mod tests {
         ]);
         assert_eq!(prog.gate_count, 2);
         assert_eq!(prog.measure_count, 2);
+    }
+
+    #[test]
+    fn test_control_flow_instructions() {
+        let label = Instruction::Label("start".into());
+        let goto  = Instruction::Goto { label: "start".into() };
+        let gif   = Instruction::GotoIf    { qubit: 0, label: "branch".into() };
+        let gifn  = Instruction::GotoIfNot { qubit: 1, label: "skip".into() };
+
+        assert!(label.is_control_flow());
+        assert!(goto.is_control_flow());
+        assert!(!label.is_gate());
+        assert!(!goto.is_gate());
+        assert_eq!(gif.qubits(), vec![0]);
+        assert_eq!(gifn.qubits(), vec![1]);
+        assert_eq!(format!("{label}"), "LABEL start");
+        assert_eq!(format!("{goto}"),  "GOTO start");
+        assert_eq!(format!("{gif}"),   "IF 0 GOTO branch");
+        assert_eq!(format!("{gifn}"),  "IFNOT 1 GOTO skip");
+    }
+
+    #[test]
+    fn test_program_has_control_flow() {
+        let no_cf = vec![Instruction::H(0), Instruction::MeasureAll];
+        let with_cf = vec![Instruction::H(0), Instruction::Label("x".into())];
+        assert!(!Instruction::program_has_control_flow(&no_cf));
+        assert!(Instruction::program_has_control_flow(&with_cf));
     }
 
     #[test]

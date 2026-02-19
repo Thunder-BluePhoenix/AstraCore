@@ -1,0 +1,60 @@
+// Quantum Teleportation with Classical Corrections
+//
+// Teleports |+⟩ (H|0⟩) from q0 (message) to q2 (bob).
+// q1 is the entanglement qubit shared between Alice and Bob.
+//
+// Register layout:
+//   q0 = message qubit (Alice)  — prepared in |+⟩
+//   q1 = Alice's half of Bell pair
+//   q2 = Bob's qubit
+//
+// Protocol:
+//   1. Prepare |+⟩ on message qubit: H q0
+//   2. Create Bell pair on (q1, q2): H q1 → CNOT q1 q2
+//   3. Bell measurement by Alice: CNOT q0 q1 → H q0 → MEASURE q0, q1
+//   4. Classical corrections by Bob:
+//        IF q1==1 → apply X on q2
+//        IF q0==1 → apply Z on q2
+//   5. Measure q2 — should be |+⟩, i.e. P(1) ≈ 0.5
+//
+// Expected output: q2 in state |+⟩ ≡ P(|1⟩) = 0.50
+//
+// Run: astracore run examples/teleport.aql
+
+QREG 3
+
+// Step 1 — prepare message qubit in |+⟩
+H 0
+
+// Step 2 — create Bell pair between Alice (q1) and Bob (q2)
+H 1
+CNOT 1 2
+
+BARRIER  // ── Bell measurement ──────────────────────────────
+
+// Step 3 — entangle message with Alice's qubit, measure both
+CNOT 0 1
+H 0
+MEASURE 0
+MEASURE 1
+
+BARRIER  // ── Classical corrections ─────────────────────────
+
+// Step 4a — if Alice's q1 measured 1, Bob applies X
+IF 1 GOTO apply_x
+GOTO skip_x
+LABEL apply_x
+X 2
+LABEL skip_x
+
+// Step 4b — if Alice's q0 measured 1, Bob applies Z
+IF 0 GOTO apply_z
+GOTO done
+LABEL apply_z
+Z 2
+LABEL done
+
+BARRIER  // ── Verify ────────────────────────────────────────
+
+// Step 5 — Bob measures; P(|1⟩) ≈ 0.5 verifies teleportation
+MEASURE 2

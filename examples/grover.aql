@@ -1,0 +1,45 @@
+// Grover's Search Algorithm — 2 Qubits, Target |11⟩
+//
+// Searches an unstructured database of 4 items (|00⟩, |01⟩, |10⟩, |11⟩)
+// for the marked item |11⟩. One Grover iteration gives P(|11⟩) = 1.0.
+//
+// Circuit structure:
+//   1. Initialize: uniform superposition via H⊗H
+//   2. Oracle: mark |11⟩ with a phase flip (CZ flips sign of |11⟩)
+//   3. Diffuser (amplitude amplification):
+//        H⊗H → X⊗X → CZ (phase flip of |00⟩) → X⊗X → H⊗H
+//
+// After 1 iteration on 2 qubits, amplitude is entirely in |11⟩.
+// This is optimal: floor(π/4 · √4) = 1 iteration.
+//
+// Expected output: P(|11⟩) = 1.0  →  both qubits measure 1
+//
+// Run: astracore run examples/grover.aql
+
+QREG 2
+
+BARRIER  // ── Step 1: Uniform superposition ─────────────────
+H 0
+H 1
+
+BARRIER  // ── Step 2: Phase oracle — mark |11⟩ ──────────────
+CZ 0 1   // CZ flips the phase of |11⟩: |11⟩ → -|11⟩
+
+BARRIER  // ── Step 3: Grover diffuser ────────────────────────
+// H⊗H
+H 0
+H 1
+// X⊗X (transform |00⟩ → |11⟩ for the controlled-phase)
+X 0
+X 1
+// Phase flip of |00⟩ (now mapped to |11⟩ by X⊗X): CZ
+CZ 0 1
+// X⊗X to undo the mapping
+X 0
+X 1
+// H⊗H to close the diffuser
+H 0
+H 1
+
+BARRIER  // ── Measurement ───────────────────────────────────
+MEASURE_ALL  // expect: both qubits = 1  (|11⟩ with probability 1)

@@ -78,6 +78,8 @@ pub fn parse(statements: Vec<Vec<Spanned>>) -> Result<Program, AqlError> {
 
     // Validate qubit indices are in range
     validate_bounds(&body, num_qubits)?;
+    // Validate all jump targets refer to defined labels
+    validate_labels(&body)?;
 
     Ok(Program::new(num_qubits, body))
 }
@@ -197,6 +199,47 @@ fn parse_statement(tokens: &[Spanned]) -> Result<Item, AqlError> {
         Token::Barrier => Item::Instr(Instruction::Barrier),
 
         // ── Literals at start of line are errors ───────────────────────
+        // ── Control flow ───────────────────────────────────────────────
+        Token::Label => {
+            check_argc(2)?;
+            Item::Instr(Instruction::Label(ident_arg(&tokens[1])?))
+        }
+        Token::Goto => {
+            check_argc(2)?;
+            Item::Instr(Instruction::Goto { label: ident_arg(&tokens[1])? })
+        }
+        Token::If => {
+            // IF <q> GOTO <label>  — 4 tokens
+            check_argc(4)?;
+            let qubit = int_arg(&tokens[1])?;
+            if !matches!(tokens[2].token, Token::Goto) {
+                return Err(AqlError::Parse {
+                    line: tokens[2].line,
+                    msg: format!(
+                        "expected 'GOTO' after qubit index in 'IF' statement, got '{}'",
+                        tokens[2].token.display()
+                    ),
+                });
+            }
+            Item::Instr(Instruction::GotoIf { qubit, label: ident_arg(&tokens[3])? })
+        }
+        Token::IfNot => {
+            // IFNOT <q> GOTO <label>  — 4 tokens
+            check_argc(4)?;
+            let qubit = int_arg(&tokens[1])?;
+            if !matches!(tokens[2].token, Token::Goto) {
+                return Err(AqlError::Parse {
+                    line: tokens[2].line,
+                    msg: format!(
+                        "expected 'GOTO' after qubit index in 'IFNOT' statement, got '{}'",
+                        tokens[2].token.display()
+                    ),
+                });
+            }
+            Item::Instr(Instruction::GotoIfNot { qubit, label: ident_arg(&tokens[3])? })
+        }
+
+        // ── Literals at statement start are errors ─────────────────────
         Token::Int(n) => return Err(AqlError::Parse {
             line,
             msg: format!("unexpected integer '{n}' at start of statement — expected a gate mnemonic"),
@@ -204,6 +247,10 @@ fn parse_statement(tokens: &[Spanned]) -> Result<Item, AqlError> {
         Token::Float(f) => return Err(AqlError::Parse {
             line,
             msg: format!("unexpected float '{f}' at start of statement — expected a gate mnemonic"),
+        }),
+        Token::Ident(name) => return Err(AqlError::Parse {
+            line,
+            msg: format!("unknown mnemonic '{name}' — did you mean a gate or LABEL/GOTO/IF?"),
         }),
     })
 }
@@ -218,6 +265,20 @@ fn int_arg(s: &Spanned) -> Result<usize, AqlError> {
             line: s.line,
             msg: format!(
                 "expected qubit index (non-negative integer), got '{}'",
+                s.token.display()
+            ),
+        }),
+    }
+}
+
+/// Require a label name: an identifier token.
+fn ident_arg(s: &Spanned) -> Result<String, AqlError> {
+    match &s.token {
+        Token::Ident(name) => Ok(name.clone()),
+        _ => Err(AqlError::Parse {
+            line: s.line,
+            msg: format!(
+                "expected label name (identifier), got '{}'",
                 s.token.display()
             ),
         }),
@@ -240,6 +301,31 @@ fn flt_arg(s: &Spanned) -> Result<f64, AqlError> {
 }
 
 // ── Qubit bound validation ────────────────────────────────────────────────
+
+/// Validate that every jump target (GOTO/IF/IFNOT) refers to a defined LABEL.
+fn validate_labels(body: &[Instruction]) -> Result<(), AqlError> {
+    use std::collections::HashSet;
+    let defined: HashSet<&str> = body.iter()
+        .filter_map(|i| if let Instruction::Label(n) = i { Some(n.as_str()) } else { None })
+        .collect();
+
+    for instr in body {
+        let target = match instr {
+            Instruction::Goto { label }
+            | Instruction::GotoIf    { label, .. }
+            | Instruction::GotoIfNot { label, .. } => Some(label.as_str()),
+            _ => None,
+        };
+        if let Some(t) = target {
+            if !defined.contains(t) {
+                return Err(AqlError::Validation {
+                    msg: format!("jump to undefined label '{t}'"),
+                });
+            }
+        }
+    }
+    Ok(())
+}
 
 fn validate_bounds(body: &[Instruction], num_qubits: usize) -> Result<(), AqlError> {
     for instr in body {
@@ -377,7 +463,48 @@ mod tests {
     }
 
     #[test]
-    fn test_error_unknown_token() {
-        assert!(matches!(compile("QREG 2\nFLIB 0"), Err(AqlError::Lex { .. })));
+    fn test_error_unknown_mnemonic() {
+        // FLIB is now a valid identifier token — error is at parse level
+        assert!(matches!(compile("QREG 2\nFLIB 0"), Err(AqlError::Parse { .. })));
+    }
+
+    #[test]
+    fn test_error_invalid_character() {
+        // '@' is still a lex error
+        assert!(matches!(compile("QREG 2\n@foo"), Err(AqlError::Lex { .. })));
+    }
+
+    #[test]
+    fn test_control_flow_if_goto() {
+        let prog = compile(
+            "QREG 1\nX 0\nMEASURE 0\nIF 0 GOTO done\nX 0\nLABEL done"
+        ).unwrap();
+        assert_eq!(prog.instructions.len(), 5);
+    }
+
+    #[test]
+    fn test_control_flow_ifnot_goto() {
+        let prog = compile(
+            "QREG 1\nMEASURE 0\nIFNOT 0 GOTO end\nX 0\nLABEL end"
+        ).unwrap();
+        assert_eq!(prog.instructions.len(), 4);
+    }
+
+    #[test]
+    fn test_error_undefined_label() {
+        // GOTO a label that doesn't exist
+        assert!(matches!(
+            compile("QREG 1\nGOTO nowhere"),
+            Err(AqlError::Validation { .. })
+        ));
+    }
+
+    #[test]
+    fn test_error_if_missing_goto_keyword() {
+        // IF 0 <not-GOTO> label — parse error
+        assert!(matches!(
+            compile("QREG 1\nIF 0 LABEL end\nLABEL end"),
+            Err(AqlError::Parse { .. })
+        ));
     }
 }
