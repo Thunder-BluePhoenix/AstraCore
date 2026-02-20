@@ -12,7 +12,7 @@
 
 // ── Instruction ───────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Instruction {
     // ── Single-qubit gates ──────────────────────────────────────────────
     H(usize),
@@ -216,7 +216,7 @@ mod tests {
             Instruction::Toffoli { control0: 0, control1: 1, target: 2 }.qubits(),
             vec![0, 1, 2]
         );
-        assert_eq!(Instruction::MeasureAll.qubits(), vec![]);
+        assert_eq!(Instruction::MeasureAll.qubits(), Vec::<usize>::new());
     }
 
     #[test]

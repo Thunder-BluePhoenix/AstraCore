@@ -1,52 +1,48 @@
-/// AQL Instruction Scheduler — Phase 3 stub.
+/// AQL Instruction Scheduler — Phase 3/5.
 ///
-/// The scheduler's future role is to reorder commuting quantum gates to:
-///   - Minimize circuit depth
-///   - Improve qubit locality (reduce crosstalk on real hardware)
-///   - Enable SIMD-friendly batching of single-qubit gates
-///   - Detect and merge adjacent canceling gates (H·H = I, X·X = I)
+/// The scheduler transforms a parsed Program before execution:
+///   1. Peephole optimization (Phase 5) — gate cancellation and rotation merging
+///   2. Instruction reordering (future)  — commutativity-based depth reduction
+///   3. SIMD batching hints (future)     — group single-qubit gates by qubit
 ///
-/// Current implementation: identity pass (no reordering).
-/// This maintains correctness while the optimizer is developed in Phase 3/5.
+/// Control-flow programs (LABEL/GOTO/IF) skip peephole optimization because
+/// branching invalidates qubit-adjacency analysis.
 use crate::compiler::ir::{Instruction, Program};
+use crate::optimizer::peephole;
 
-/// A scheduled program ready for execution by the runtime executor.
-/// Currently identical to the source program (no-op pass-through).
+/// A scheduled (and optimized) program ready for execution.
 #[derive(Debug, Clone)]
 pub struct ScheduledProgram {
     pub num_qubits: usize,
     pub instructions: Vec<Instruction>,
-    /// Annotations from the scheduler (empty for now).
     pub metadata: SchedulerMetadata,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct SchedulerMetadata {
-    /// How many gate merges the scheduler performed (0 = no-op pass).
+    /// Gate merges / cancellations performed by the peephole optimizer.
     pub gates_merged: usize,
-    /// Estimated circuit depth after scheduling.
+    /// Gate count after optimization (circuit depth proxy).
     pub circuit_depth: usize,
+    /// Number of optimizer passes to reach fixed point.
+    pub optimizer_passes: usize,
 }
 
-impl From<&Program> for ScheduledProgram {
-    fn from(program: &Program) -> Self {
-        Self {
-            num_qubits: program.num_qubits,
-            instructions: program.instructions.clone(),
-            metadata: SchedulerMetadata {
-                gates_merged: 0,
-                circuit_depth: program.gate_count,
-            },
-        }
-    }
-}
-
-/// Schedule a program for execution.
+/// Schedule and optimize a program for execution.
 ///
-/// Phase 3 stub: passes the program through unchanged.
-/// Future: gate cancellation, commutativity reordering, SIMD batching.
+/// Runs the peephole optimizer then returns the transformed program with
+/// accompanying metadata.  Control-flow programs pass through unchanged.
 pub fn schedule(program: &Program) -> ScheduledProgram {
-    ScheduledProgram::from(program)
+    let (optimized, stats) = peephole::optimize(&program.instructions);
+    ScheduledProgram {
+        num_qubits: program.num_qubits,
+        instructions: optimized,
+        metadata: SchedulerMetadata {
+            gates_merged: stats.gates_removed,
+            circuit_depth: stats.gates_after,
+            optimizer_passes: stats.passes,
+        },
+    }
 }
 
 #[cfg(test)]
@@ -55,7 +51,8 @@ mod tests {
     use crate::compiler::ir::{Instruction, Program};
 
     #[test]
-    fn test_schedule_passthrough() {
+    fn test_schedule_passthrough_no_optimizable_gates() {
+        // Bell circuit has no cancellable pairs — should be unchanged
         let prog = Program::new(2, vec![
             Instruction::H(0),
             Instruction::Cnot { control: 0, target: 1 },
@@ -66,5 +63,41 @@ mod tests {
         assert_eq!(scheduled.instructions.len(), prog.instructions.len());
         assert_eq!(scheduled.metadata.gates_merged, 0);
         assert_eq!(scheduled.metadata.circuit_depth, prog.gate_count);
+    }
+
+    #[test]
+    fn test_schedule_cancels_hh() {
+        // H·H·CNOT: H pair should be eliminated
+        let prog = Program::new(2, vec![
+            Instruction::H(0),
+            Instruction::H(0),
+            Instruction::Cnot { control: 0, target: 1 },
+            Instruction::MeasureAll,
+        ]);
+        let scheduled = schedule(&prog);
+        assert_eq!(scheduled.metadata.gates_merged, 2);
+        // Remaining: CNOT + MeasureAll
+        assert_eq!(
+            scheduled.instructions.len(), 2,
+            "H·H should cancel, leaving CNOT + MeasureAll"
+        );
+    }
+
+    #[test]
+    fn test_schedule_merges_rotations() {
+        // Rz(π/4) · Rz(π/4) → Rz(π/2)
+        use std::f64::consts::PI;
+        let prog = Program::new(1, vec![
+            Instruction::Rz { qubit: 0, theta: PI / 4.0 },
+            Instruction::Rz { qubit: 0, theta: PI / 4.0 },
+        ]);
+        let scheduled = schedule(&prog);
+        assert_eq!(scheduled.metadata.gates_merged, 1);
+        assert_eq!(scheduled.instructions.len(), 1);
+        if let Instruction::Rz { qubit: 0, theta } = scheduled.instructions[0] {
+            assert!((theta - PI / 2.0).abs() < 1e-9);
+        } else {
+            panic!("expected merged Rz");
+        }
     }
 }

@@ -1,5 +1,5 @@
 use astracore::compiler;
-use astracore::core::Simulator;
+use astracore::core::{NoiseChannel, Simulator, SimdCapabilities};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -8,6 +8,7 @@ fn main() {
     match args.get(1).map(String::as_str) {
         None | Some("demo")           => run_all_demos(),
         Some("run")                   => cli_run(args.get(2).map(String::as_str)),
+        Some("opt")                   => cli_optimize(args.get(2).map(String::as_str)),
         Some("help") | Some("--help") => print_help(),
         Some(unknown) => {
             eprintln!("Unknown command '{}'. Run 'astracore help' for usage.", unknown);
@@ -89,11 +90,37 @@ fn print_banner() {
     println!();
 }
 
+fn cli_optimize(path: Option<&str>) {
+    let path = match path {
+        Some(p) => p,
+        None => { eprintln!("Usage: astracore opt <file.aql>"); std::process::exit(1); }
+    };
+    let source = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => { eprintln!("Cannot read '{}': {}", path, e); std::process::exit(1); }
+    };
+    println!("━━━ AstraCore Optimizer ━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!("File: {path}\n");
+    match compiler::optimize(&source) {
+        Ok((prog, stats)) => {
+            println!("Optimized IR:");
+            println!("  QREG {}", prog.num_qubits);
+            for instr in &prog.instructions { println!("  {instr}"); }
+            println!();
+            println!("Gates before : {}", stats.gates_before);
+            println!("Gates after  : {}  (-{:.1}%)", stats.gates_after, stats.reduction_percent());
+            println!("Passes       : {}", stats.passes);
+        }
+        Err(e) => { eprintln!("{e}"); std::process::exit(1); }
+    }
+}
+
 fn print_help() {
     println!("Usage: astracore [COMMAND] [ARGS]\n");
     println!("Commands:");
     println!("  demo            Run built-in demonstration circuits");
     println!("  run <file.aql>  Parse and execute an AQL program");
+    println!("  opt <file.aql>  Optimize and display the circuit (Phase 5)");
     println!("  help            Show this message\n");
     println!("AQL Instructions:");
     println!("  QREG <n>              Declare n qubits (must be first)");
@@ -118,6 +145,9 @@ fn run_all_demos() {
     demo_teleportation();
     demo_deutsch();
     demo_aql_pipeline();
+    demo_optimizer();
+    demo_noise_model();
+    demo_simd_layer();
 }
 
 fn demo_single_qubit() {
@@ -201,6 +231,145 @@ fn demo_deutsch() {
     };
     println!("  f(x)=0 (constant): q0={} (expect 0)", run(|_| {}) as u8);
     println!("  f(x)=x (balanced): q0={} (expect 1)", run(|s| { s.cnot(0, 1); }) as u8);
+    println!();
+}
+
+fn demo_optimizer() {
+    println!("━━━ Demo 7: Gate Optimizer (Phase 5) ━━━━━━━━━━━━━");
+
+    let redundant = "\
+// Intentionally redundant circuit
+QREG 2
+H 0          // ─┐ H·H cancels → identity
+H 0          // ─┘
+H 1          // kept (no pair)
+RZ 0 0.7854  // Rz(π/8) ─┐ merge → Rz(π/4)
+RZ 0 0.7854  //           ─┘
+X 1          // ─┐ X·X cancels
+X 1          // ─┘
+CNOT 0 1
+MEASURE_ALL
+";
+
+    println!("Source (redundant):");
+    for line in redundant.lines() {
+        let t = line.trim();
+        if !t.is_empty() && !t.starts_with("//") {
+            println!("  {t}");
+        }
+    }
+    println!();
+
+    match compiler::optimize(redundant) {
+        Ok((opt_prog, stats)) => {
+            println!("After peephole optimization:");
+            for instr in &opt_prog.instructions {
+                println!("  {instr}");
+            }
+            println!();
+            println!(
+                "  Gates before : {}",  stats.gates_before
+            );
+            println!(
+                "  Gates after  : {}  (-{:.0}%)",
+                stats.gates_after,
+                stats.reduction_percent()
+            );
+            println!("  Passes       : {}", stats.passes);
+        }
+        Err(e) => eprintln!("Error: {e}"),
+    }
+    println!();
+}
+
+fn demo_noise_model() {
+    println!("━━━ Demo 8: Noise Simulation (Phase 5) ━━━━━━━━━━━");
+
+    // 1. Ideal Bell state — perfect correlation
+    let ideal_agree = {
+        let mut agree = 0u32;
+        for _ in 0..500 {
+            let mut sim = Simulator::new(2);
+            sim.h(0).cnot(0, 1);
+            let r = sim.measure_all();
+            if r[0] == r[1] { agree += 1; }
+        }
+        agree
+    };
+    println!("Ideal Bell state (500 shots):");
+    println!("  q0==q1  : {}/500  ({:.0}%)", ideal_agree, ideal_agree as f64 / 5.0);
+
+    // 2. Noisy Bell state — depolarizing p=0.10
+    let noisy_agree = {
+        let mut agree = 0u32;
+        for _ in 0..500 {
+            let mut sim = Simulator::with_noise(2, NoiseChannel::Depolarizing { prob: 0.10 });
+            sim.h(0).cnot(0, 1);
+            let r = sim.measure_all();
+            if r[0] == r[1] { agree += 1; }
+        }
+        agree
+    };
+    println!("Noisy Bell (depolarizing p=0.10, 500 shots):");
+    println!("  q0==q1  : {}/500  ({:.0}%)", noisy_agree, noisy_agree as f64 / 5.0);
+
+    // 3. Amplitude damping — |1⟩ decays toward |0⟩
+    let decayed = {
+        let mut ones = 0u32;
+        for _ in 0..500 {
+            let mut sim = Simulator::with_noise(1, NoiseChannel::AmplitudeDamping { gamma: 0.5 });
+            sim.x(0); // prepare |1⟩, then noise immediately decays it
+            let r = sim.measure(0);
+            if r { ones += 1; }
+        }
+        ones
+    };
+    println!("Amplitude damping (γ=0.5) on X|0⟩=|1⟩ (500 shots):");
+    println!("  P(|1⟩)  ≈ {:.2}  (expect ≈0.50)", decayed as f64 / 500.0);
+    println!();
+}
+
+fn demo_simd_layer() {
+    println!("━━━ Demo 9: Layer 2 — SIMD Optimization (Phase 3) ━━");
+
+    let caps = SimdCapabilities::detect();
+    println!("CPU SIMD capabilities:");
+    println!("  SSE2    : {}", if caps.sse2    { "✓" } else { "✗" });
+    println!("  AVX2    : {}", if caps.avx2    { "✓" } else { "✗" });
+    println!("  AVX-512F: {}", if caps.avx512f { "✓" } else { "✗" });
+    println!("  Active  : {}", caps.feature_string());
+    println!("  Backend : {}", caps.best_backend());
+    println!();
+
+    // Demonstrate correctness: run an H·X·H = Z circuit on 4 qubits
+    // with the SIMD path active on qubit 0.
+    use astracore::core::gates::{apply_single_qubit_gate, hadamard, pauli_x};
+    use astracore::core::StateVector;
+
+    let n = 4;
+    let mut sv = StateVector::new(n);
+    // H on q0 — this triggers AVX2 path when available
+    apply_single_qubit_gate(&mut sv, &hadamard(), 0);
+    // X on q0 — AVX2 path
+    apply_single_qubit_gate(&mut sv, &pauli_x(), 0);
+    // H on q0 — AVX2 path (H·X·H = Z in terms of probabilities on |0⟩)
+    apply_single_qubit_gate(&mut sv, &hadamard(), 0);
+
+    let p0 = sv.amplitudes[0].norm_sq();
+    let p1 = sv.amplitudes[1].norm_sq();
+    println!("H·X·H |0...0⟩  →  |0...0⟩  (Z gate on qubit 0):");
+    println!("  P(q0=0) = {p0:.6}  (expect ≈ 1.0)");
+    println!("  P(q0=1) = {p1:.6}  (expect ≈ 0.0)");
+
+    // Throughput comparison note
+    if caps.avx2 {
+        println!();
+        println!("AVX2 active: qubit-0 gates process 2 complex amplitudes per cycle");
+        println!("  (256-bit YMM register = 2 × Complex<f64> = one full amplitude pair)");
+    } else {
+        println!();
+        println!("AVX2 not detected: using scalar fallback (results identical)");
+    }
     println!();
 }
 

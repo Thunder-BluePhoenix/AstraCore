@@ -49,3 +49,26 @@ pub fn run(source: &str) -> Result<ExecutionResult, AqlError> {
     let program = parse_source(source)?;
     crate::runtime::execute(&program)
 }
+
+/// One-shot: lex + parse + **optimize** + execute.
+///
+/// Runs the peephole optimizer before execution.  Equivalent quantum semantics
+/// as `run()` but the instruction stream may be shorter.
+pub fn run_optimized(source: &str) -> Result<ExecutionResult, AqlError> {
+    let program = parse_source(source)?;
+    let (opt_instrs, _stats) = crate::optimizer::peephole::optimize(&program.instructions);
+    let opt_program = ir::Program::new(program.num_qubits, opt_instrs);
+    crate::runtime::execute(&opt_program)
+}
+
+/// One-shot: lex + parse + optimize. Returns the optimized `Program` and stats.
+///
+/// Use this when you want to inspect what the optimizer did before running.
+pub fn optimize(source: &str)
+    -> Result<(Program, crate::optimizer::OptimizationStats), AqlError>
+{
+    let program = parse_source(source)?;
+    let (opt_instrs, stats) = crate::optimizer::peephole::optimize(&program.instructions);
+    let opt_program = ir::Program::new(program.num_qubits, opt_instrs);
+    Ok((opt_program, stats))
+}

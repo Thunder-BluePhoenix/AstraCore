@@ -6,6 +6,7 @@
 use super::complex::Complex;
 use std::fmt;
 
+#[derive(Clone)]
 pub struct StateVector {
     pub num_qubits: usize,
     pub amplitudes: Vec<Complex>,

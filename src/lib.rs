@@ -24,4 +24,5 @@
 
 pub mod compiler;
 pub mod core;
+pub mod optimizer;
 pub mod runtime;

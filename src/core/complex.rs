@@ -6,7 +6,10 @@
 use std::fmt;
 use std::ops::{Add, Div, Mul, Neg, Sub};
 
+/// `repr(C)` guarantees the memory layout is `[re: f64 @ +0, im: f64 @ +8]`,
+/// which is required for sound pointer casting in SIMD routines.
 #[derive(Debug, Clone, Copy)]
+#[repr(C)]
 pub struct Complex {
     pub re: f64,
     pub im: f64,

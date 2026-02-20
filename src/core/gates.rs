@@ -127,34 +127,15 @@ pub fn identity() -> Matrix2x2 {
 
 /// Apply a single-qubit gate to `target` qubit in the state vector.
 ///
-/// For each pair of basis states (i0, i1) that differ only at the
-/// target qubit position, apply the 2×2 unitary in-place.
+/// Dispatches to the fastest available backend at runtime:
+/// - **AVX2** (256-bit): used when `target == 0` and the CPU supports AVX2.
+///   Processes adjacent amplitude pairs in one YMM-register-wide pass.
+/// - **Scalar**: used for all other targets or when AVX2 is unavailable.
+///
+/// Both paths produce bit-identical results (within floating-point rounding).
 pub fn apply_single_qubit_gate(state: &mut StateVector, gate: &Matrix2x2, target: usize) {
     assert!(target < state.num_qubits, "target qubit out of range");
-
-    let dim = state.dim();
-    let target_mask = 1 << target;
-
-    // Iterate over the "lower half" — basis states with target bit = 0
-    let mut i0 = 0;
-    while i0 < dim {
-        // Skip basis states where target bit is 1
-        if i0 & target_mask != 0 {
-            i0 += 1;
-            continue;
-        }
-        let i1 = i0 | target_mask; // partner state with target bit = 1
-
-        let a0 = state.amplitudes[i0];
-        let a1 = state.amplitudes[i1];
-
-        // [new_a0]   [g00 g01] [a0]
-        // [new_a1] = [g10 g11] [a1]
-        state.amplitudes[i0] = gate[0][0] * a0 + gate[0][1] * a1;
-        state.amplitudes[i1] = gate[1][0] * a0 + gate[1][1] * a1;
-
-        i0 += 1;
-    }
+    super::simd::apply_gate_simd(state, gate, target);
 }
 
 /// Apply CNOT (Controlled-NOT) gate.

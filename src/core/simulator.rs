@@ -6,9 +6,11 @@
 ///   - Measurement with wavefunction collapse
 ///   - Deterministic mode (fixed seed) for reproducible research
 ///   - State inspection and pretty-printing
+///   - Optional noise model applied after each single-qubit gate (Phase 5)
 use super::gates::{
     self, apply_cnot, apply_cz, apply_single_qubit_gate, apply_swap, apply_toffoli,
 };
+use super::noise::NoiseChannel;
 use super::state::StateVector;
 use rand::Rng;
 use std::fmt;
@@ -21,6 +23,8 @@ pub struct Simulator {
     rng_seed: Option<u64>,
     /// Internal RNG state for deterministic mode
     det_counter: u64,
+    /// Optional noise channel applied after every gate (Phase 5)
+    noise_model: Option<NoiseChannel>,
 }
 
 impl Simulator {
@@ -31,6 +35,7 @@ impl Simulator {
             measurements: vec![None; num_qubits],
             rng_seed: None,
             det_counter: 0,
+            noise_model: None,
         }
     }
 
@@ -42,7 +47,26 @@ impl Simulator {
             measurements: vec![None; num_qubits],
             rng_seed: Some(seed),
             det_counter: seed,
+            noise_model: None,
         }
+    }
+
+    /// Create a noisy simulator. The `channel` is applied after every gate
+    /// on the affected qubit(s).
+    pub fn with_noise(num_qubits: usize, channel: NoiseChannel) -> Self {
+        let mut sim = Self::new(num_qubits);
+        sim.noise_model = Some(channel);
+        sim
+    }
+
+    /// Attach or replace the noise model on an existing simulator.
+    pub fn set_noise(&mut self, channel: NoiseChannel) {
+        self.noise_model = Some(channel);
+    }
+
+    /// Remove the noise model (revert to ideal simulation).
+    pub fn clear_noise(&mut self) {
+        self.noise_model = None;
     }
 
     /// Number of qubits in this simulator.
@@ -54,51 +78,61 @@ impl Simulator {
 
     pub fn h(&mut self, qubit: usize) -> &mut Self {
         apply_single_qubit_gate(&mut self.state, &gates::hadamard(), qubit);
+        self.apply_noise_if_set(qubit);
         self
     }
 
     pub fn x(&mut self, qubit: usize) -> &mut Self {
         apply_single_qubit_gate(&mut self.state, &gates::pauli_x(), qubit);
+        self.apply_noise_if_set(qubit);
         self
     }
 
     pub fn y(&mut self, qubit: usize) -> &mut Self {
         apply_single_qubit_gate(&mut self.state, &gates::pauli_y(), qubit);
+        self.apply_noise_if_set(qubit);
         self
     }
 
     pub fn z(&mut self, qubit: usize) -> &mut Self {
         apply_single_qubit_gate(&mut self.state, &gates::pauli_z(), qubit);
+        self.apply_noise_if_set(qubit);
         self
     }
 
     pub fn s(&mut self, qubit: usize) -> &mut Self {
         apply_single_qubit_gate(&mut self.state, &gates::s_gate(), qubit);
+        self.apply_noise_if_set(qubit);
         self
     }
 
     pub fn t(&mut self, qubit: usize) -> &mut Self {
         apply_single_qubit_gate(&mut self.state, &gates::t_gate(), qubit);
+        self.apply_noise_if_set(qubit);
         self
     }
 
     pub fn rx(&mut self, qubit: usize, theta: f64) -> &mut Self {
         apply_single_qubit_gate(&mut self.state, &gates::rx(theta), qubit);
+        self.apply_noise_if_set(qubit);
         self
     }
 
     pub fn ry(&mut self, qubit: usize, theta: f64) -> &mut Self {
         apply_single_qubit_gate(&mut self.state, &gates::ry(theta), qubit);
+        self.apply_noise_if_set(qubit);
         self
     }
 
     pub fn rz(&mut self, qubit: usize, theta: f64) -> &mut Self {
         apply_single_qubit_gate(&mut self.state, &gates::rz(theta), qubit);
+        self.apply_noise_if_set(qubit);
         self
     }
 
     pub fn phase(&mut self, qubit: usize, theta: f64) -> &mut Self {
         apply_single_qubit_gate(&mut self.state, &gates::phase_gate(theta), qubit);
+        self.apply_noise_if_set(qubit);
         self
     }
 
@@ -106,21 +140,30 @@ impl Simulator {
 
     pub fn cnot(&mut self, control: usize, target: usize) -> &mut Self {
         apply_cnot(&mut self.state, control, target);
+        self.apply_noise_if_set(control);
+        self.apply_noise_if_set(target);
         self
     }
 
     pub fn cz(&mut self, control: usize, target: usize) -> &mut Self {
         apply_cz(&mut self.state, control, target);
+        self.apply_noise_if_set(control);
+        self.apply_noise_if_set(target);
         self
     }
 
     pub fn swap(&mut self, qubit_a: usize, qubit_b: usize) -> &mut Self {
         apply_swap(&mut self.state, qubit_a, qubit_b);
+        self.apply_noise_if_set(qubit_a);
+        self.apply_noise_if_set(qubit_b);
         self
     }
 
     pub fn toffoli(&mut self, control0: usize, control1: usize, target: usize) -> &mut Self {
         apply_toffoli(&mut self.state, control0, control1, target);
+        self.apply_noise_if_set(control0);
+        self.apply_noise_if_set(control1);
+        self.apply_noise_if_set(target);
         self
     }
 
@@ -128,6 +171,7 @@ impl Simulator {
 
     pub fn apply(&mut self, gate: &gates::Matrix2x2, qubit: usize) -> &mut Self {
         apply_single_qubit_gate(&mut self.state, gate, qubit);
+        self.apply_noise_if_set(qubit);
         self
     }
 
@@ -180,6 +224,17 @@ impl Simulator {
     /// Print the full state vector to stdout.
     pub fn print_state(&self) {
         print!("{}", self.state);
+    }
+
+    // ── Internal noise application ────────────────────────────────────────
+
+    /// Apply the noise model to `qubit` (if one is configured).
+    fn apply_noise_if_set(&mut self, qubit: usize) {
+        if self.noise_model.is_none() { return; }
+        let rng = self.sample_random();
+        // Clone to satisfy borrow checker (noise_model: &self, state: &mut self)
+        let channel = self.noise_model.clone().unwrap();
+        channel.apply(&mut self.state, qubit, rng);
     }
 
     // ── Internal RNG ──────────────────────────────────────────────────────
