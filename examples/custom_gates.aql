@@ -1,0 +1,61 @@
+// custom_gates.aql — AstraCore Phase 5: User-Defined Gates
+//
+// Demonstrates GATE...END blocks and CALL invocations.
+// Gates are declared anywhere in the file; they are extracted before execution.
+//
+// Syntax recap:
+//   GATE <name> <num_qubits>
+//     <body instructions using local qubits 0..num_qubits-1>
+//   END
+//
+//   CALL <name> <global_q0> <global_q1> ...
+//
+// ── Gate library ──────────────────────────────────────────────────────────
+
+// Bell-pair factory: creates (|00⟩+|11⟩)/√2 on two qubits.
+// Local qubit 0 → control, local qubit 1 → target.
+GATE bell 2
+  H 0
+  CNOT 0 1
+END
+
+// GHZ-state factory: creates (|000⟩+|111⟩)/√2 on three qubits.
+GATE ghz 3
+  H 0
+  CNOT 0 1
+  CNOT 0 2
+END
+
+// Bit-flip gate: wraps X for clarity.
+GATE flip 1
+  X 0
+END
+
+// Phase-kickback pair: H·CZ·H on two qubits (useful building block).
+GATE hzh 2
+  H 0
+  CZ 0 1
+  H 0
+END
+
+// ── Main program ──────────────────────────────────────────────────────────
+
+QREG 6
+
+// ── Demonstration 1: Bell pair on qubits 0,1 ─────────────────────────────
+// Expected final state: P(|00⟩)=0.5, P(|11⟩)=0.5 for qubits 0,1
+CALL bell 0 1
+
+// ── Demonstration 2: GHZ state on qubits 2,3,4 ───────────────────────────
+// Expected final state: P(|000⟩)=0.5, P(|111⟩)=0.5 for qubits 2,3,4
+CALL ghz 2 3 4
+
+// ── Demonstration 3: flip qubit 5 ────────────────────────────────────────
+// flip wraps X — qubit 5 goes from |0⟩ to |1⟩
+CALL flip 5
+
+// ── Measure everything ───────────────────────────────────────────────────
+// Qubits 0,1 are a Bell pair  → they always agree.
+// Qubits 2,3,4 are a GHZ triplet → all three always agree.
+// Qubit 5 is |1⟩ → always measures 1.
+MEASURE_ALL

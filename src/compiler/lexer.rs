@@ -40,6 +40,11 @@ pub enum Token {
     If,       // IF <q> GOTO <name>
     IfNot,    // IFNOT <q> GOTO <name>
 
+    // ── Phase 5: Custom gate definitions ─────────────────────────────────
+    Gate,     // GATE <name> <num_qubits>  — opens a gate definition block
+    End,      // END                       — closes a GATE block
+    Call,     // CALL <name> <q0> <q1> …   — invoke a user-defined gate
+
     // ── Literals ─────────────────────────────────────────────────────────
     Int(usize),
     Float(f64),
@@ -74,6 +79,9 @@ impl Token {
             Token::Goto       => "GOTO".into(),
             Token::If         => "IF".into(),
             Token::IfNot      => "IFNOT".into(),
+            Token::Gate       => "GATE".into(),
+            Token::End        => "END".into(),
+            Token::Call       => "CALL".into(),
             Token::Int(n)     => n.to_string(),
             Token::Float(f)   => format!("{f}"),
             Token::Ident(s)   => s.clone(),
@@ -157,6 +165,10 @@ fn lex_word(word: &str, line: usize) -> Result<Token, AqlError> {
         "GOTO"                 => return Ok(Token::Goto),
         "IF"                   => return Ok(Token::If),
         "IFNOT"                => return Ok(Token::IfNot),
+        // Custom gate keywords
+        "GATE"                 => return Ok(Token::Gate),
+        "END"                  => return Ok(Token::End),
+        "CALL"                 => return Ok(Token::Call),
         // Math constants → resolved to Float immediately
         "PI"                   => return Ok(Token::Float(consts::PI)),
         "TAU"                  => return Ok(Token::Float(consts::TAU)),

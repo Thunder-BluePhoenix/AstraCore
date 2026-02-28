@@ -174,6 +174,19 @@ pub fn execute(program: &Program) -> Result<ExecutionResult, AqlError> {
             Instruction::Barrier => {}
             Instruction::Label(_) => {} // no-op; jump targets indexed by label_table
 
+            // ── Custom gate call ────────────────────────────────────────
+            Instruction::CallGate { name, qubits: arg_qubits } => {
+                let def = program.gate_defs.get(name.as_str()).ok_or_else(|| {
+                    AqlError::Runtime { msg: format!("undefined gate '{name}' at runtime") }
+                })?;
+
+                // Remap each instruction in the gate body: local index i → arg_qubits[i]
+                for body_instr in &def.body.clone() {
+                    execute_remapped(body_instr, arg_qubits, &mut sim);
+                    gate_count += 1;
+                }
+            }
+
             // ── Control flow ────────────────────────────────────────────
             Instruction::Goto { label } => {
                 let &target = label_table.get(label.as_str()).ok_or_else(|| {
@@ -230,6 +243,40 @@ pub fn execute(program: &Program) -> Result<ExecutionResult, AqlError> {
         branch_count,
         steps_executed,
     })
+}
+
+// ── Gate-body execution helper ─────────────────────────────────────────────
+
+/// Execute one instruction from a gate body, remapping local qubit indices to
+/// the caller's global qubit indices.
+///
+/// `qubit_map[local_i]` = global qubit index for local qubit `i`.
+/// Only gate instructions are expected in a gate body (validated at parse time).
+fn execute_remapped(instr: &Instruction, qubit_map: &[usize], sim: &mut Simulator) {
+    let q = |local: usize| qubit_map[local];
+    // Discard the `&mut Self` builder return value with `; }` so all arms return `()`.
+    match instr {
+        Instruction::H(i)                   => { sim.h(q(*i)); }
+        Instruction::X(i)                   => { sim.x(q(*i)); }
+        Instruction::Y(i)                   => { sim.y(q(*i)); }
+        Instruction::Z(i)                   => { sim.z(q(*i)); }
+        Instruction::S(i)                   => { sim.s(q(*i)); }
+        Instruction::T(i)                   => { sim.t(q(*i)); }
+        Instruction::Rx { qubit, theta }    => { sim.rx(q(*qubit), *theta); }
+        Instruction::Ry { qubit, theta }    => { sim.ry(q(*qubit), *theta); }
+        Instruction::Rz { qubit, theta }    => { sim.rz(q(*qubit), *theta); }
+        Instruction::Phase { qubit, theta } => { sim.phase(q(*qubit), *theta); }
+        Instruction::Cnot { control, target } => { sim.cnot(q(*control), q(*target)); }
+        Instruction::Cz   { control, target } => { sim.cz(q(*control), q(*target)); }
+        Instruction::Swap { qubit_a, qubit_b }=> { sim.swap(q(*qubit_a), q(*qubit_b)); }
+        Instruction::Toffoli { control0, control1, target } => {
+            sim.toffoli(q(*control0), q(*control1), q(*target));
+        }
+        Instruction::Barrier => {} // no-op
+        // All other variants (Measure, Label, control flow, CallGate) are
+        // rejected at parse time inside gate bodies.
+        _ => {} // unreachable in a validated program
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────
@@ -509,5 +556,74 @@ MEASURE_ALL");
         // Balanced oracle (CNOT) → q0 must measure 1
         let r = run("QREG 2\nX 1\nH 0\nH 1\nCNOT 0 1\nH 0\nMEASURE 0");
         assert!(r.outcome(0).unwrap());
+    }
+
+    // ── Custom gate (CALL) tests ────────────────────────────────────────
+
+    #[test]
+    fn test_call_gate_x_flips() {
+        // Define a 1-qubit "flip" gate that applies X, call it on qubit 0
+        let r = run("GATE flip 1\n  X 0\nEND\nQREG 1\nCALL flip 0\nMEASURE 0");
+        assert!(r.outcome(0).unwrap(), "flip gate should put qubit in |1⟩");
+    }
+
+    #[test]
+    fn test_call_gate_bell_pair() {
+        // GATE bell 2: H 0, CNOT 0 1 — must produce equal P(|00⟩) = P(|11⟩) = 0.5
+        let r = run(
+            "GATE bell 2\n  H 0\n  CNOT 0 1\nEND\n\
+             QREG 2\nCALL bell 0 1\nMEASURE_ALL"
+        );
+        let probs = r.pre_measurement_probs.as_ref().unwrap();
+        assert!((probs[0] - 0.5).abs() < 1e-10, "P(|00⟩) should be 0.5");
+        assert!( probs[1].abs() < 1e-10,         "P(|01⟩) should be 0");
+        assert!( probs[2].abs() < 1e-10,         "P(|10⟩) should be 0");
+        assert!((probs[3] - 0.5).abs() < 1e-10, "P(|11⟩) should be 0.5");
+        // Both qubits must agree
+        assert_eq!(r.outcome(0), r.outcome(1));
+    }
+
+    #[test]
+    fn test_call_gate_remaps_qubits_correctly() {
+        // Bell gate called on (2,3) in a 4-qubit register.
+        // Qubits 0,1 should be untouched (P(|0⟩)=1).
+        let r = run(
+            "GATE bell 2\n  H 0\n  CNOT 0 1\nEND\n\
+             QREG 4\nCALL bell 2 3\nMEASURE_ALL"
+        );
+        let probs = r.pre_measurement_probs.as_ref().unwrap();
+        // State should be |00⟩ ⊗ (|00⟩+|11⟩)/√2
+        // i.e. P(|0000⟩)=0.5, P(|0011⟩)=0.5 (basis indices 0 and 3 for the lower 2 bits)
+        // In 4-qubit encoding (qubit 0 = LSB): |0000⟩=idx 0, |1100⟩=idx 12
+        assert!((probs[0]  - 0.5).abs() < 1e-10, "P(|0000⟩) = 0.5");
+        assert!((probs[12] - 0.5).abs() < 1e-10, "P(|1100⟩) = 0.5");
+    }
+
+    #[test]
+    fn test_multiple_call_gate_invocations() {
+        // Two Bell pairs on (0,1) and (2,3) via the same gate definition
+        let r = run(
+            "GATE bell 2\n  H 0\n  CNOT 0 1\nEND\n\
+             QREG 4\nCALL bell 0 1\nCALL bell 2 3\nMEASURE_ALL"
+        );
+        let probs = r.pre_measurement_probs.as_ref().unwrap();
+        // State: (|00⟩+|11⟩)/√2 ⊗ (|00⟩+|11⟩)/√2
+        // Each of |0000⟩, |0011⟩, |1100⟩, |1111⟩ should have prob 0.25
+        // In LSB encoding: q0=bit0, q1=bit1, q2=bit2, q3=bit3
+        // |0000⟩=0, |0011⟩(q0=1,q1=1)=3, |1100⟩(q2=1,q3=1)=12, |1111⟩=15
+        assert!((probs[0]  - 0.25).abs() < 1e-10, "P(|0000⟩) = 0.25, got {}", probs[0]);
+        assert!((probs[3]  - 0.25).abs() < 1e-10, "P(|0011⟩) = 0.25, got {}", probs[3]);
+        assert!((probs[12] - 0.25).abs() < 1e-10, "P(|1100⟩) = 0.25, got {}", probs[12]);
+        assert!((probs[15] - 0.25).abs() < 1e-10, "P(|1111⟩) = 0.25, got {}", probs[15]);
+    }
+
+    #[test]
+    fn test_gate_count_includes_body_gates() {
+        // CALL bell 0 1 expands to H + CNOT = 2 gates
+        let r = run(
+            "GATE bell 2\n  H 0\n  CNOT 0 1\nEND\n\
+             QREG 2\nCALL bell 0 1\nMEASURE_ALL"
+        );
+        assert_eq!(r.gate_count, 2, "gate_count should count body instructions");
     }
 }

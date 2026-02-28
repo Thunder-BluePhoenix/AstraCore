@@ -9,6 +9,7 @@ fn main() {
         None | Some("demo")           => run_all_demos(),
         Some("run")                   => cli_run(args.get(2).map(String::as_str)),
         Some("opt")                   => cli_optimize(args.get(2).map(String::as_str)),
+        Some("analyze") | Some("stats") => cli_analyze(args.get(2).map(String::as_str)),
         Some("help") | Some("--help") => print_help(),
         Some(unknown) => {
             eprintln!("Unknown command '{}'. Run 'astracore help' for usage.", unknown);
@@ -115,13 +116,31 @@ fn cli_optimize(path: Option<&str>) {
     }
 }
 
+fn cli_analyze(path: Option<&str>) {
+    let path = match path {
+        Some(p) => p,
+        None => { eprintln!("Usage: astracore analyze <file.aql>"); std::process::exit(1); }
+    };
+    let source = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => { eprintln!("Cannot read '{}': {}", path, e); std::process::exit(1); }
+    };
+    println!("━━━ AstraCore Circuit Analyzer ━━━━━━━━━━━━━━━━━━━");
+    println!("File: {path}\n");
+    match compiler::analyze_source(&source) {
+        Ok(a) => print!("{}", a.report()),
+        Err(e) => { eprintln!("{e}"); std::process::exit(1); }
+    }
+}
+
 fn print_help() {
     println!("Usage: astracore [COMMAND] [ARGS]\n");
     println!("Commands:");
-    println!("  demo            Run built-in demonstration circuits");
-    println!("  run <file.aql>  Parse and execute an AQL program");
-    println!("  opt <file.aql>  Optimize and display the circuit (Phase 5)");
-    println!("  help            Show this message\n");
+    println!("  demo                Run built-in demonstration circuits");
+    println!("  run <file.aql>      Parse and execute an AQL program");
+    println!("  opt <file.aql>      Optimize and display the circuit");
+    println!("  analyze <file.aql>  Static circuit analysis and profiling");
+    println!("  help                Show this message\n");
     println!("AQL Instructions:");
     println!("  QREG <n>              Declare n qubits (must be first)");
     println!("  H|X|Y|Z|S|T <q>       Single-qubit gates");
@@ -148,6 +167,7 @@ fn run_all_demos() {
     demo_optimizer();
     demo_noise_model();
     demo_simd_layer();
+    demo_circuit_analysis();
 }
 
 fn demo_single_qubit() {
@@ -371,6 +391,29 @@ fn demo_simd_layer() {
         println!("AVX2 not detected: using scalar fallback (results identical)");
     }
     println!();
+}
+
+fn demo_circuit_analysis() {
+    println!("━━━ Demo 10: Circuit Analysis (Profiling) ━━━━━━━━━");
+
+    // Three circuits of increasing complexity for comparison
+    let circuits: &[(&str, &str)] = &[
+        ("Bell pair", "QREG 2\nH 0\nCNOT 0 1\nMEASURE_ALL"),
+        ("GHZ (5 qubits)",
+         "QREG 5\nH 0\nCNOT 0 1\nCNOT 0 2\nCNOT 0 3\nCNOT 0 4\nMEASURE_ALL"),
+        ("Custom-gate GHZ",
+         "GATE ghz 3\n  H 0\n  CNOT 0 1\n  CNOT 0 2\nEND\n\
+          QREG 3\nCALL ghz 0 1 2\nMEASURE_ALL"),
+    ];
+
+    for (name, src) in circuits {
+        println!("  Circuit: {name}");
+        match compiler::analyze_source(src) {
+            Ok(a) => print!("{}", a.report()),
+            Err(e) => eprintln!("  Error: {e}"),
+        }
+        println!();
+    }
 }
 
 fn demo_aql_pipeline() {

@@ -171,10 +171,17 @@ fn primary_single_qubit(instr: &Instruction) -> Option<usize> {
 }
 
 /// Search `buf` backward for the last instruction that touches `qubit`,
-/// stopping at (not crossing) any BARRIER.
+/// stopping at (not crossing) any BARRIER or CallGate on the same qubit.
+///
+/// `CallGate` is treated as an opaque fence: the optimizer cannot inspect
+/// the gate body, so it cannot prove that commutation across the call is safe.
 fn last_on_qubit_before_barrier(buf: &[Instruction], qubit: usize) -> Option<usize> {
     for i in (0..buf.len()).rev() {
         if matches!(buf[i], Instruction::Barrier) {
+            return None;
+        }
+        // CallGate is opaque — stop the search if it touches our qubit.
+        if matches!(&buf[i], Instruction::CallGate { .. }) && buf[i].qubits().contains(&qubit) {
             return None;
         }
         if buf[i].qubits().contains(&qubit) {
@@ -483,5 +490,29 @@ mod tests {
         let (out, stats) = optimize(&[]);
         assert!(out.is_empty());
         assert_eq!(stats.gates_removed, 0);
+    }
+
+    // ── CallGate barrier semantics ─────────────────────────────────────
+
+    #[test]
+    fn test_call_gate_blocks_hh_on_touched_qubit() {
+        // H(0) · CALL bell 0 1 · H(0): cannot cancel — CALL touches qubit 0
+        let src = "GATE bell 2\n  H 0\n  CNOT 0 1\nEND\nH 0\nCALL bell 0 1\nH 0";
+        let instrs_in = instrs(src);
+        let (out, stats) = optimize(&instrs_in);
+        assert_eq!(stats.gates_removed, 0, "CALL should block H·H cancellation");
+        assert_eq!(out.len(), instrs_in.len());
+    }
+
+    #[test]
+    fn test_call_gate_transparent_to_untouched_qubit() {
+        // H(0) · CALL flip 1 · H(0): CALL only touches qubit 1 → H·H on qubit 0 cancels
+        let src = "GATE flip 1\n  X 0\nEND\nH 0\nCALL flip 1\nH 0";
+        let instrs_in = instrs(src);
+        let (out, stats) = optimize(&instrs_in);
+        // H(0) and H(0) should cancel; CALL flip 1 survives
+        assert_eq!(stats.gates_removed, 2, "H·H on untouched qubit should cancel");
+        let mnems: Vec<&str> = out.iter().map(|i| i.mnemonic()).collect();
+        assert_eq!(mnems, vec!["CALL"], "only CALL should remain");
     }
 }

@@ -9,6 +9,7 @@
 ///   - Angles stored as f64 radians — no unit ambiguity
 ///   - Qubit indices as usize — validated against QREG at parse time
 ///   - Display impl produces valid AQL output — IR is round-trippable
+use std::collections::HashMap;
 
 // ── Instruction ───────────────────────────────────────────────────────────
 
@@ -48,6 +49,13 @@ pub enum Instruction {
     GotoIf { qubit: usize, label: String },
     /// Jump to `label` if qubit `qubit` last measured as |0⟩.
     GotoIfNot { qubit: usize, label: String },
+
+    // ── Phase 5: Custom gate invocation ──────────────────────────────────
+    /// Call a user-defined gate by name.
+    ///
+    /// `qubits` are the *global* qubit indices passed as arguments.
+    /// Local qubit `i` in the gate body is mapped to `qubits[i]` at runtime.
+    CallGate { name: String, qubits: Vec<usize> },
 }
 
 impl Instruction {
@@ -75,15 +83,17 @@ impl Instruction {
             Self::Goto { .. }       => "GOTO",
             Self::GotoIf { .. }     => "IF",
             Self::GotoIfNot { .. }  => "IFNOT",
+            Self::CallGate { .. }   => "CALL",
         }
     }
 
-    /// True if this instruction applies a quantum gate.
+    /// True if this instruction applies a quantum gate (including user-defined gate calls).
     pub fn is_gate(&self) -> bool {
         matches!(self,
             Self::H(_) | Self::X(_) | Self::Y(_) | Self::Z(_) | Self::S(_) | Self::T(_)
             | Self::Rx { .. } | Self::Ry { .. } | Self::Rz { .. } | Self::Phase { .. }
             | Self::Cnot { .. } | Self::Cz { .. } | Self::Swap { .. } | Self::Toffoli { .. }
+            | Self::CallGate { .. }
         )
     }
 
@@ -95,6 +105,11 @@ impl Instruction {
     /// True if this instruction is a control-flow directive.
     pub fn is_control_flow(&self) -> bool {
         matches!(self, Self::Label(_) | Self::Goto { .. } | Self::GotoIf { .. } | Self::GotoIfNot { .. })
+    }
+
+    /// True if the program contains any `CallGate` instructions.
+    pub fn program_has_calls(instructions: &[Self]) -> bool {
+        instructions.iter().any(|i| matches!(i, Self::CallGate { .. }))
     }
 
     /// Qubit indices referenced by this instruction.
@@ -110,6 +125,7 @@ impl Instruction {
             Self::Swap { qubit_a, qubit_b }                         => vec![*qubit_a, *qubit_b],
             Self::Toffoli { control0, control1, target }            => vec![*control0, *control1, *target],
             Self::GotoIf { qubit, .. } | Self::GotoIfNot { qubit, .. } => vec![*qubit],
+            Self::CallGate { qubits, .. }                               => qubits.clone(),
             Self::MeasureAll | Self::Barrier
             | Self::Label(_) | Self::Goto { .. }                    => vec![],
         }
@@ -145,7 +161,51 @@ impl std::fmt::Display for Instruction {
             Self::Goto { label }                          => write!(f, "GOTO {label}"),
             Self::GotoIf { qubit, label }                 => write!(f, "IF {qubit} GOTO {label}"),
             Self::GotoIfNot { qubit, label }              => write!(f, "IFNOT {qubit} GOTO {label}"),
+            Self::CallGate { name, qubits }               => {
+                let args: Vec<String> = qubits.iter().map(|q| q.to_string()).collect();
+                write!(f, "CALL {name} {}", args.join(" "))
+            }
         }
+    }
+}
+
+// ── GateDef ───────────────────────────────────────────────────────────────
+
+/// A user-defined gate: a named, reusable subroutine over `num_qubits` local qubits.
+///
+/// The gate body uses *local* qubit indices `0..num_qubits-1`.  At call time,
+/// local index `i` is remapped to the caller's `qubits[i]`.
+///
+/// Syntax:
+/// ```text
+/// GATE bell 2
+///   H 0
+///   CNOT 0 1
+/// END
+/// ```
+#[derive(Debug, Clone)]
+pub struct GateDef {
+    /// Gate name (lowercased for case-insensitive lookup).
+    pub name: String,
+    /// Number of qubit parameters this gate accepts.
+    pub num_qubits: usize,
+    /// Gate body — instructions using local indices 0..num_qubits-1.
+    pub body: Vec<Instruction>,
+}
+
+impl GateDef {
+    pub fn new(name: String, num_qubits: usize, body: Vec<Instruction>) -> Self {
+        Self { name, num_qubits, body }
+    }
+}
+
+impl std::fmt::Display for GateDef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "GATE {} {}", self.name, self.num_qubits)?;
+        for instr in &self.body {
+            writeln!(f, "  {instr}")?;
+        }
+        write!(f, "END")
     }
 }
 
@@ -162,13 +222,25 @@ pub struct Program {
     pub gate_count: usize,
     /// Number of measurement operations.
     pub measure_count: usize,
+    /// User-defined gate library — keyed by lowercase gate name.
+    pub gate_defs: HashMap<String, GateDef>,
 }
 
 impl Program {
+    /// Construct a program without custom gate definitions (backward-compatible).
     pub(crate) fn new(num_qubits: usize, instructions: Vec<Instruction>) -> Self {
+        Self::with_gate_defs(num_qubits, instructions, HashMap::new())
+    }
+
+    /// Construct a program with a user-defined gate library.
+    pub(crate) fn with_gate_defs(
+        num_qubits: usize,
+        instructions: Vec<Instruction>,
+        gate_defs: HashMap<String, GateDef>,
+    ) -> Self {
         let gate_count    = instructions.iter().filter(|i| i.is_gate()).count();
         let measure_count = instructions.iter().filter(|i| i.is_measurement()).count();
-        Self { num_qubits, instructions, gate_count, measure_count }
+        Self { num_qubits, instructions, gate_count, measure_count, gate_defs }
     }
 }
 
