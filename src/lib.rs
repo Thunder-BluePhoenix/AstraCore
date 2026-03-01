@@ -24,5 +24,7 @@
 
 pub mod compiler;
 pub mod core;
+pub mod dashboard;
 pub mod optimizer;
+pub mod plugins;
 pub mod runtime;

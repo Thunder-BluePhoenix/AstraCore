@@ -1,5 +1,6 @@
 use astracore::compiler;
 use astracore::core::{NoiseChannel, Simulator, SimdCapabilities};
+use astracore::dashboard::{self, DashboardData};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -10,6 +11,9 @@ fn main() {
         Some("run")                   => cli_run(args.get(2).map(String::as_str)),
         Some("opt")                   => cli_optimize(args.get(2).map(String::as_str)),
         Some("analyze") | Some("stats") => cli_analyze(args.get(2).map(String::as_str)),
+        Some("dash")                  => cli_dash(args.get(2).map(String::as_str)),
+        Some("report")                => cli_report(args.get(2).map(String::as_str), args.get(3).map(String::as_str)),
+        Some("serve")                 => cli_serve(args.get(2).map(String::as_str), args.get(3).map(String::as_str)),
         Some("help") | Some("--help") => print_help(),
         Some(unknown) => {
             eprintln!("Unknown command '{}'. Run 'astracore help' for usage.", unknown);
@@ -133,14 +137,86 @@ fn cli_analyze(path: Option<&str>) {
     }
 }
 
+// ── Dashboard CLI ─────────────────────────────────────────────────────────
+
+/// Build a [`DashboardData`] by parsing, analyzing, and executing an AQL file.
+fn load_dashboard_data(path: &str) -> DashboardData {
+    let source = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => { eprintln!("Cannot read '{}': {}", path, e); std::process::exit(1); }
+    };
+    let analysis = match compiler::analyze_source(&source) {
+        Ok(a) => a,
+        Err(e) => { eprintln!("{e}"); std::process::exit(1); }
+    };
+    let result = match compiler::run(&source) {
+        Ok(r) => r,
+        Err(e) => { eprintln!("{e}"); std::process::exit(1); }
+    };
+    DashboardData { source_path: path.to_string(), analysis, result }
+}
+
+fn cli_dash(path: Option<&str>) {
+    let path = path.unwrap_or_else(|| {
+        eprintln!("Usage: astracore dash <file.aql>");
+        std::process::exit(1);
+    });
+    println!("━━━ AstraCore TUI Dashboard ━━━━━━━━━━━━━━━━━━━━━━━");
+    println!("Loading {}…", path);
+    let data = load_dashboard_data(path);
+    if let Err(e) = dashboard::run_tui(&data) {
+        eprintln!("TUI error: {e}");
+        std::process::exit(1);
+    }
+}
+
+fn cli_report(path: Option<&str>, out: Option<&str>) {
+    let path = path.unwrap_or_else(|| {
+        eprintln!("Usage: astracore report <file.aql> [output.html]");
+        std::process::exit(1);
+    });
+    // Default output path: same directory as input, with .html extension
+    let output = out.map(String::from).unwrap_or_else(|| {
+        let stem = std::path::Path::new(path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("report");
+        format!("{}.html", stem)
+    });
+    println!("━━━ AstraCore HTML Report ━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!("Source : {path}");
+    println!("Output : {output}");
+    println!();
+    let data = load_dashboard_data(path);
+    match dashboard::generate_report(&data, &output) {
+        Ok(()) => println!("Report written to '{output}'. Open in a browser to view."),
+        Err(e) => { eprintln!("Write error: {e}"); std::process::exit(1); }
+    }
+}
+
+fn cli_serve(path: Option<&str>, port_arg: Option<&str>) {
+    let path = path.unwrap_or_else(|| {
+        eprintln!("Usage: astracore serve <file.aql> [port]");
+        std::process::exit(1);
+    });
+    let port: u16 = port_arg
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(8080);
+    let data = load_dashboard_data(path);
+    dashboard::serve(data, port);
+}
+
 fn print_help() {
     println!("Usage: astracore [COMMAND] [ARGS]\n");
     println!("Commands:");
-    println!("  demo                Run built-in demonstration circuits");
-    println!("  run <file.aql>      Parse and execute an AQL program");
-    println!("  opt <file.aql>      Optimize and display the circuit");
-    println!("  analyze <file.aql>  Static circuit analysis and profiling");
-    println!("  help                Show this message\n");
+    println!("  demo                      Run built-in demonstration circuits");
+    println!("  run <file.aql>            Parse and execute an AQL program");
+    println!("  opt <file.aql>            Optimize and display the circuit");
+    println!("  analyze <file.aql>        Static circuit analysis and profiling");
+    println!("  dash <file.aql>           Launch interactive TUI dashboard");
+    println!("  report <file.aql> [out]   Generate standalone HTML report");
+    println!("  serve <file.aql> [port]   Start local HTTP dashboard server");
+    println!("  help                      Show this message\n");
     println!("AQL Instructions:");
     println!("  QREG <n>              Declare n qubits (must be first)");
     println!("  H|X|Y|Z|S|T <q>       Single-qubit gates");

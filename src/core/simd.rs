@@ -7,48 +7,60 @@
 /// - [`SimdCapabilities`]: Runtime CPU feature detection (SSE2, AVX2, AVX-512F).
 /// - [`Backend`]: Enum indicating which compute path was used.
 /// - [`apply_gate_simd`]: Public dispatch — picks AVX2 or scalar at runtime.
-/// - Internal `apply_gate_avx2_target0`: AVX2 path for the innermost qubit (qubit 0).
+/// - Internal `apply_gate_avx2_target0`: AVX2 fast path for qubit 0 (adjacent pairs).
+/// - Internal `apply_gate_avx2_generic`: AVX2 generic path for all other qubits.
 /// - Internal `apply_gate_scalar`: Portable fallback identical to the original loop.
 ///
-/// # AVX2 Strategy for Qubit 0 (Adjacent Pairs)
+/// # Shared ADDSUB Kernel
 ///
-/// When `target == 0` the state vector decomposes into adjacent pairs
-/// `(amplitude[2k], amplitude[2k+1])` for k = 0, 1, …, 2ⁿ⁻¹ − 1.
-/// Each pair fits exactly in one 256-bit YMM register:
-///
-/// ```text
-/// YMM = [ c0.re | c0.im | c1.re | c1.im ]   (4 × f64)
-/// ```
-///
-/// The 2×2 complex matrix-vector product
+/// Both AVX2 paths share the same 2×2 complex matrix-vector product kernel.
+/// For any pair `(c0, c1)` packed into a 256-bit YMM register as
+/// `[c0.re, c0.im, c1.re, c1.im]`, the gate product
 ///
 /// ```text
 /// new_c0 = g00·c0 + g01·c1
 /// new_c1 = g10·c0 + g11·c1
 /// ```
 ///
-/// is computed using the AVX2 ADDSUB trick for complex multiplication:
+/// is computed via the AVX2 ADDSUB trick (complex multiply without division):
 ///
 /// ```text
 /// For s·c where s = g_re + i·g_im, c = [c.re, c.im] duplicated to both halves:
 ///   t1 = [g_re, g_re, g_re, g_re] × [c.re, c.im, c.re, c.im]
 ///   t2 = [g_im, g_im, g_im, g_im] × [c.im, c.re, c.im, c.re]   ← re/im swapped
 ///   ADDSUB(t1, t2) = [t1[0]−t2[0], t1[1]+t2[1], …]
-///                  = [s.re·c.re − s.im·c.im, s.re·c.im + s.im·c.re, …]
-///                  = [Re(s·c), Im(s·c), Re(s·c), Im(s·c)]       ✓
+///                  = [s.re·c.re − s.im·c.im, s.re·c.im + s.im·c.re]
+///                  = [Re(s·c), Im(s·c)]  ✓
 /// ```
 ///
-/// Packing rows 0 and 1 of the gate into the lower and upper 128-bit lanes
-/// of the gate vectors lets one ADDSUB compute both output elements at once:
+/// # AVX2 Path — Qubit 0 (Adjacent Pairs, Fastest)
+///
+/// When `target == 0`, pairs are always adjacent: `(2k, 2k+1)`.
+/// Two Complex values fit in one 256-bit YMM load, so two gates compute per register.
 ///
 /// ```text
-/// ADDSUB( [g00·c0], [g10·c0] )  →  [new_c0_from_c0, new_c1_from_c0]
-/// ADDSUB( [g01·c1], [g11·c1] )  →  [new_c0_from_c1, new_c1_from_c1]
-/// ADD( above two results )       →  [new_c0, new_c1]               ✓
+/// YMM = [c0.re, c0.im, c1.re, c1.im]  (single _mm256_loadu_pd)
 /// ```
 ///
-/// Instruction count per pair: 1 load + 4 permutes + 4 muls + 2 addsubs + 1 add + 1 store.
-/// Throughput improvement: ~3–4× over scalar on wide pipelines.
+/// Instructions per pair: 1 load + 4 permutes + 4 muls + 2 addsubs + 1 add + 1 store.
+/// Throughput: ~3–4× scalar on wide pipelines.
+///
+/// # AVX2 Path — Qubit k > 0 (Gather-Pack-Scatter)
+///
+/// When `target == k > 0`, pairs `(i0, i0 | mask)` are `mask = 2^k` elements apart.
+/// We load each Complex in a separate 128-bit half, pack into one 256-bit register,
+/// apply the shared kernel, then unpack the two 128-bit results back to their locations.
+///
+/// ```text
+/// load c0 → XMM_lo   load c1 → XMM_hi
+/// YMM = _mm256_set_m128d(XMM_hi, XMM_lo)  →  [c0.re, c0.im, c1.re, c1.im]
+/// … shared ADDSUB kernel …
+/// store YMM[127:0]   → amplitudes[i0]
+/// store YMM[255:128] → amplitudes[i1]
+/// ```
+///
+/// Instructions per pair: 2 × 128-bit load + 1 pack + kernel + 2 × 128-bit store.
+/// Throughput: ~2–3× scalar (extra scatter penalty vs target-0).
 
 use super::gates::Matrix2x2;
 use super::state::StateVector;
@@ -120,9 +132,10 @@ impl std::fmt::Display for Backend {
 
 /// Apply a single-qubit gate using the fastest backend available at runtime.
 ///
-/// - **AVX2 path**: selected when `target == 0` and the CPU supports AVX2.
-///   Processes all adjacent amplitude pairs in one YMM-register-wide pass.
-/// - **Scalar fallback**: used for all other target qubits, or when AVX2 is absent.
+/// - **AVX2 path**: selected for **all target qubits** when the CPU supports AVX2.
+///   - `target == 0`: adjacent-pair fast path (`apply_gate_avx2_target0`).
+///   - `target > 0`: gather-pack-scatter path (`apply_gate_avx2_generic`).
+/// - **Scalar fallback**: used only when AVX2 is absent.
 ///
 /// Returns the backend that was used.
 pub fn apply_gate_simd(
@@ -131,13 +144,17 @@ pub fn apply_gate_simd(
     target: usize,
 ) -> Backend {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if target == 0 && is_x86_feature_detected!("avx2") {
+    if is_x86_feature_detected!("avx2") {
         // SAFETY:
         //   1. AVX2 confirmed at runtime by is_x86_feature_detected!.
         //   2. state.amplitudes.len() == 2^n >= 2 (enforced by StateVector::new).
         //   3. Complex is #[repr(C)] with layout {re: f64 @ +0, im: f64 @ +8},
         //      so casting *mut Complex → *mut f64 is sound.
-        unsafe { apply_gate_avx2_target0(state, gate); }
+        if target == 0 {
+            unsafe { apply_gate_avx2_target0(state, gate); }
+        } else {
+            unsafe { apply_gate_avx2_generic(state, gate, target); }
+        }
         return Backend::Avx2;
     }
 
@@ -250,6 +267,87 @@ unsafe fn apply_gate_avx2_target0(state: &mut StateVector, gate: &Matrix2x2) {
     }
 }
 
+// ── AVX2 generic path (target k > 0) ──────────────────────────────────────
+
+/// AVX2-accelerated gate application for any qubit `k > 0` (gather-pack-scatter).
+///
+/// For target qubit `k`, pairs are `(i0, i0 + mask)` where `mask = 1 << k` and
+/// `(i0 & mask) == 0`.  The two Complex values are not adjacent in memory, so we:
+///
+/// 1. Load each into a 128-bit XMM half.
+/// 2. Pack them into one 256-bit YMM register (`_mm256_set_m128d`).
+/// 3. Apply the shared ADDSUB kernel (identical to `apply_gate_avx2_target0`).
+/// 4. Scatter the two 128-bit result halves back to their original addresses.
+///
+/// # Safety
+/// Caller must have confirmed `is_x86_feature_detected!("avx2")` is true.
+/// The `Complex` type must be `#[repr(C)]` with `{re: f64, im: f64}` layout.
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "avx2")]
+unsafe fn apply_gate_avx2_generic(state: &mut StateVector, gate: &Matrix2x2, target: usize) {
+    use std::arch::x86_64::*;
+
+    let g00 = gate[0][0];
+    let g01 = gate[0][1];
+    let g10 = gate[1][0];
+    let g11 = gate[1][1];
+
+    // Same gate coefficient vectors as target-0
+    let vg00g10_re = _mm256_set_pd(g10.re, g10.re, g00.re, g00.re);
+    let vg00g10_im = _mm256_set_pd(g10.im, g10.im, g00.im, g00.im);
+    let vg01g11_re = _mm256_set_pd(g11.re, g11.re, g01.re, g01.re);
+    let vg01g11_im = _mm256_set_pd(g11.im, g11.im, g01.im, g01.im);
+
+    let ptr  = state.amplitudes.as_mut_ptr() as *mut f64;
+    let dim  = state.amplitudes.len();
+    let mask = 1usize << target;
+
+    // Iterate over only the "bit-k = 0" half of the index space.
+    // step = 2*mask; within [chunk, chunk+mask) all indices have bit k = 0.
+    let step = mask * 2;
+    let mut chunk = 0usize;
+    while chunk < dim {
+        let mut i0 = chunk;
+        let chunk_end = chunk + mask;
+        while i0 < chunk_end {
+            let i1 = i0 + mask; // == i0 | mask (bit k of i0 is guaranteed 0 here)
+
+            // ── Load c0 and c1 from non-adjacent memory ───────────────────
+            let c0_xmm = _mm_loadu_pd(ptr.add(i0 * 2)); // [c0.re, c0.im]
+            let c1_xmm = _mm_loadu_pd(ptr.add(i1 * 2)); // [c1.re, c1.im]
+
+            // ── Pack into 256-bit: lower lane = c0, upper lane = c1 ───────
+            // _mm256_set_m128d(hi, lo) → YMM[127:0]=lo, YMM[255:128]=hi
+            let data = _mm256_set_m128d(c1_xmm, c0_xmm);
+            // data = [c0.re, c0.im, c1.re, c1.im]
+
+            // ── Shared ADDSUB kernel (identical to target-0) ──────────────
+            let c0_dup  = _mm256_permute4x64_pd(data, 0x44);  // [c0, c0]
+            let c1_dup  = _mm256_permute4x64_pd(data, 0xEE);  // [c1, c1]
+            let c0_swap = _mm256_permute_pd(c0_dup, 0b0101);  // re↔im swap
+            let c1_swap = _mm256_permute_pd(c1_dup, 0b0101);
+
+            let from_c0 = _mm256_addsub_pd(
+                _mm256_mul_pd(vg00g10_re, c0_dup),
+                _mm256_mul_pd(vg00g10_im, c0_swap),
+            );
+            let from_c1 = _mm256_addsub_pd(
+                _mm256_mul_pd(vg01g11_re, c1_dup),
+                _mm256_mul_pd(vg01g11_im, c1_swap),
+            );
+            let result = _mm256_add_pd(from_c0, from_c1);
+            // result = [new_c0.re, new_c0.im, new_c1.re, new_c1.im]
+
+            // ── Scatter: store 128-bit halves to original addresses ────────
+            _mm_storeu_pd(ptr.add(i0 * 2), _mm256_castpd256_pd128(result));
+            _mm_storeu_pd(ptr.add(i1 * 2), _mm256_extractf128_pd(result, 1));
+
+            i0 += 1;
+        }
+        chunk += step;
+    }
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -344,17 +442,71 @@ mod tests {
     }
 
     #[test]
-    fn test_h_gate_higher_qubit_scalar_fallback() {
-        // Target > 0 always uses scalar; result should match direct scalar call.
+    fn test_h_gate_higher_qubit_matches_scalar() {
+        // Target > 0 now uses AVX2 (if available) — result must always match scalar.
         let gate = hadamard();
         let mut s_simd   = StateVector::new(3);
         let mut s_scalar = StateVector::new(3);
-        let backend = apply(&mut s_simd, &gate, 2);
+        let _backend = apply(&mut s_simd, &gate, 2);
         apply_scalar_ref(&mut s_scalar, &gate, 2);
-        assert_eq!(backend, Backend::Scalar);
         for i in 0..s_simd.amplitudes.len() {
-            assert!(nearly(s_simd.amplitudes[i].re, s_scalar.amplitudes[i].re));
-            assert!(nearly(s_simd.amplitudes[i].im, s_scalar.amplitudes[i].im));
+            assert!(nearly(s_simd.amplitudes[i].re, s_scalar.amplitudes[i].re),
+                "re[{i}] simd={} scalar={}", s_simd.amplitudes[i].re, s_scalar.amplitudes[i].re);
+            assert!(nearly(s_simd.amplitudes[i].im, s_scalar.amplitudes[i].im),
+                "im[{i}] simd={} scalar={}", s_simd.amplitudes[i].im, s_scalar.amplitudes[i].im);
+        }
+    }
+
+    #[test]
+    fn test_avx2_all_qubit_targets_match_scalar() {
+        // Verify that every qubit target in a 4-qubit system gives the same result
+        // as scalar, regardless of which backend is chosen.
+        let n = 4;
+        let gate = hadamard();
+        for target in 0..n {
+            let mut s_simd   = StateVector::new(n);
+            let mut s_scalar = StateVector::new(n);
+            // Put the state in a non-trivial superposition first
+            apply_scalar_ref(&mut s_simd,   &gate, 0);
+            apply_scalar_ref(&mut s_scalar, &gate, 0);
+            // Now apply the gate to each target via SIMD dispatch vs scalar
+            apply(&mut s_simd,   &gate, target);
+            apply_scalar_ref(&mut s_scalar, &gate, target);
+            for i in 0..(1 << n) {
+                assert!(nearly(s_simd.amplitudes[i].re, s_scalar.amplitudes[i].re),
+                    "target={target} re[{i}]: simd={} scalar={}",
+                    s_simd.amplitudes[i].re, s_scalar.amplitudes[i].re);
+                assert!(nearly(s_simd.amplitudes[i].im, s_scalar.amplitudes[i].im),
+                    "target={target} im[{i}]: simd={} scalar={}",
+                    s_simd.amplitudes[i].im, s_scalar.amplitudes[i].im);
+            }
+        }
+    }
+
+    #[test]
+    fn test_x_gate_qubit1_flips_correctly() {
+        // X on qubit 1 of |00⟩ → |10⟩ (in LSB convention qubit 1 is bit 1)
+        let mut sv = StateVector::new(2); // |00⟩
+        apply(&mut sv, &pauli_x(), 1);
+        // |10⟩ = index 2 (binary: bit0=0, bit1=1 → index = 0b10 = 2)
+        assert!(nearly(sv.amplitudes[0].norm_sq(), 0.0), "|00⟩ should have prob 0");
+        assert!(nearly(sv.amplitudes[1].norm_sq(), 0.0), "|01⟩ should have prob 0");
+        assert!(nearly(sv.amplitudes[2].norm_sq(), 1.0), "|10⟩ should have prob 1");
+        assert!(nearly(sv.amplitudes[3].norm_sq(), 0.0), "|11⟩ should have prob 0");
+    }
+
+    #[test]
+    fn test_generic_backend_used_for_target_gt0() {
+        // When AVX2 is present, ALL targets must report Avx2.
+        // When AVX2 is absent, ALL targets report Scalar.
+        let caps = SimdCapabilities::detect();
+        let expected = caps.best_backend();
+        let gate = pauli_x();
+        for target in 0..4usize {
+            let mut sv = StateVector::new(4);
+            let got = apply(&mut sv, &gate, target);
+            assert_eq!(got, expected,
+                "target={target}: expected {expected}, got {got}");
         }
     }
 
