@@ -30,6 +30,11 @@ criterion = { version = "0.5", features = ["html_reports"] }
 name = "gate_benchmark"
 harness = false
 
+[[bench]]
+name = "statevector_scaling"
+harness = false
+path = "benches/criterion/statevector_scaling.rs"
+
 [profile.release]
 opt-level = 3
 lto = true
