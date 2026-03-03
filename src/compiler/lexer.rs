@@ -42,8 +42,11 @@ pub enum Token {
 
     // ── Phase 5: Custom gate definitions ─────────────────────────────────
     Gate,     // GATE <name> <num_qubits>  — opens a gate definition block
-    End,      // END                       — closes a GATE block
+    End,      // END                       — closes a GATE or REPEAT block
     Call,     // CALL <name> <q0> <q1> …   — invoke a user-defined gate
+
+    // ── AQL v2: structured loop ───────────────────────────────────────
+    Repeat,   // REPEAT <n> … END          — unrolled at parse time
 
     // ── Literals ─────────────────────────────────────────────────────────
     Int(usize),
@@ -82,6 +85,7 @@ impl Token {
             Token::Gate       => "GATE".into(),
             Token::End        => "END".into(),
             Token::Call       => "CALL".into(),
+            Token::Repeat     => "REPEAT".into(),
             Token::Int(n)     => n.to_string(),
             Token::Float(f)   => format!("{f}"),
             Token::Ident(s)   => s.clone(),
@@ -169,6 +173,8 @@ fn lex_word(word: &str, line: usize) -> Result<Token, AqlError> {
         "GATE"                 => return Ok(Token::Gate),
         "END"                  => return Ok(Token::End),
         "CALL"                 => return Ok(Token::Call),
+        // AQL v2 keywords
+        "REPEAT"               => return Ok(Token::Repeat),
         // Math constants → resolved to Float immediately
         "PI"                   => return Ok(Token::Float(consts::PI)),
         "TAU"                  => return Ok(Token::Float(consts::TAU)),

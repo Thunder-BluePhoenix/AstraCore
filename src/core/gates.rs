@@ -115,6 +115,16 @@ pub fn phase_gate(theta: f64) -> Matrix2x2 {
     ]
 }
 
+/// T† (T-dagger) gate — inverse of the T gate.
+/// T† = [[1, 0], [0, e^(-iπ/4)]]
+pub fn t_dagger_gate() -> Matrix2x2 {
+    let phase = Complex::from_polar(1.0, -PI / 4.0);
+    [
+        [Complex::one(),  Complex::zero()],
+        [Complex::zero(), phase],
+    ]
+}
+
 /// Identity gate — no-op, useful for circuit padding.
 pub fn identity() -> Matrix2x2 {
     [

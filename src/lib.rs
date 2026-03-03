@@ -28,3 +28,4 @@ pub mod dashboard;
 pub mod optimizer;
 pub mod plugins;
 pub mod runtime;
+pub mod simulator;

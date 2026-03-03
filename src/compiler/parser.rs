@@ -43,6 +43,9 @@ pub fn parse(statements: Vec<Vec<Spanned>>) -> Result<Program, AqlError> {
         });
     }
 
+    // ── Phase 0: Unroll all REPEAT N … END blocks ─────────────────────────
+    let statements = unroll_repeats(statements)?;
+
     // ── Phase 1: Extract all GATE...END definitions ────────────────────────
     let (gate_defs, remaining) = extract_gate_defs(statements)?;
 
@@ -72,10 +75,12 @@ pub fn parse(statements: Vec<Vec<Spanned>>) -> Result<Program, AqlError> {
             msg: "QREG must declare at least 1 qubit".into(),
         });
     }
-    if num_qubits > 30 {
+    if num_qubits > 1000 {
         return Err(AqlError::Validation {
             msg: format!(
-                "QREG {num_qubits} exceeds maximum of 30 qubits (would require >8 GB RAM)"
+                "QREG {num_qubits} exceeds maximum of 1000 qubits. \
+                 Statevector backend supports ≤30 qubits; MPS supports ≤200; \
+                 Clifford supports unlimited Clifford circuits."
             ),
         });
     }
@@ -96,6 +101,113 @@ pub fn parse(statements: Vec<Vec<Spanned>>) -> Result<Program, AqlError> {
     validate_labels(&body)?;
 
     Ok(Program::with_gate_defs(num_qubits, body, gate_defs))
+}
+
+// ── AQL v2: REPEAT unrolling ──────────────────────────────────────────────
+
+/// Unroll all `REPEAT N … END` blocks by inlining the body N times.
+///
+/// Nesting is handled correctly: GATE...END and REPEAT...END blocks inside a
+/// REPEAT body are collected as-is (their own END is not mistaken for the
+/// outer END) via a depth counter.
+fn unroll_repeats(
+    statements: Vec<Vec<Spanned>>,
+) -> Result<Vec<Vec<Spanned>>, AqlError> {
+    let mut out: Vec<Vec<Spanned>> = Vec::new();
+    let stmts = statements;
+    let mut i = 0;
+    unroll_slice(&stmts, &mut i, &mut out)?;
+    Ok(out)
+}
+
+fn unroll_slice(
+    stmts: &[Vec<Spanned>],
+    i: &mut usize,
+    out: &mut Vec<Vec<Spanned>>,
+) -> Result<(), AqlError> {
+    while *i < stmts.len() {
+        let stmt = &stmts[*i];
+        match stmt.first().map(|s| &s.token) {
+            Some(Token::Repeat) => {
+                let line = stmt[0].line;
+                if stmt.len() != 2 {
+                    return Err(AqlError::Parse {
+                        line,
+                        msg: format!(
+                            "'REPEAT' expects exactly 1 argument (repetition count), got {}",
+                            stmt.len().saturating_sub(1)
+                        ),
+                    });
+                }
+                let count = match stmt[1].token {
+                    Token::Int(n) => n,
+                    _ => return Err(AqlError::Parse {
+                        line: stmt[1].line,
+                        msg: format!(
+                            "'REPEAT' expects an integer count, got '{}'",
+                            stmt[1].token.display()
+                        ),
+                    }),
+                };
+                *i += 1;
+
+                // Collect the body up to the matching END
+                let body = collect_repeat_body(stmts, i, line)?;
+
+                // Recursively unroll nested REPEATs inside the body
+                let mut unrolled_body: Vec<Vec<Spanned>> = Vec::new();
+                let mut j = 0;
+                unroll_slice(&body, &mut j, &mut unrolled_body)?;
+
+                // Emit the body `count` times
+                for _ in 0..count {
+                    out.extend(unrolled_body.clone());
+                }
+            }
+            _ => {
+                out.push(stmt.clone());
+                *i += 1;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Collect statements between the current position and the matching `END`.
+/// Tracks nesting depth for nested GATE...END and REPEAT...END pairs.
+/// Advances `i` past the closing END.
+fn collect_repeat_body(
+    stmts: &[Vec<Spanned>],
+    i: &mut usize,
+    start_line: usize,
+) -> Result<Vec<Vec<Spanned>>, AqlError> {
+    let mut body: Vec<Vec<Spanned>> = Vec::new();
+    let mut depth = 1usize;
+
+    while *i < stmts.len() {
+        let stmt = &stmts[*i];
+        match stmt.first().map(|s| &s.token) {
+            Some(Token::Gate) | Some(Token::Repeat) => {
+                depth += 1;
+                body.push(stmt.clone());
+            }
+            Some(Token::End) => {
+                depth -= 1;
+                if depth == 0 {
+                    *i += 1; // consume the closing END
+                    return Ok(body);
+                }
+                body.push(stmt.clone());
+            }
+            _ => body.push(stmt.clone()),
+        }
+        *i += 1;
+    }
+
+    Err(AqlError::Parse {
+        line: start_line,
+        msg: "'REPEAT' block has no matching 'END'".into(),
+    })
 }
 
 // ── Gate definition extraction ────────────────────────────────────────────
@@ -432,14 +544,18 @@ fn parse_statement(
             Item::Instr(Instruction::CallGate { name, qubits })
         }
 
-        // ── GATE / END at statement level are handled by the pre-pass ──
+        // ── GATE / END / REPEAT are handled by pre-passes ─────────────
         Token::Gate => return Err(AqlError::Parse {
             line,
             msg: "'GATE' definition must not appear nested inside another statement".into(),
         }),
         Token::End => return Err(AqlError::Parse {
             line,
-            msg: "'END' without a matching 'GATE' definition".into(),
+            msg: "'END' without a matching 'GATE' or 'REPEAT' block".into(),
+        }),
+        Token::Repeat => return Err(AqlError::Parse {
+            line,
+            msg: "'REPEAT' block was not unrolled — internal compiler error".into(),
         }),
 
         // ── Literals at statement start are errors ─────────────────────

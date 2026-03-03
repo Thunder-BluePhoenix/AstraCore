@@ -7,14 +7,15 @@ fn main() {
     print_banner();
 
     match args.get(1).map(String::as_str) {
-        None | Some("demo")           => run_all_demos(),
-        Some("run")                   => cli_run(args.get(2).map(String::as_str)),
-        Some("opt")                   => cli_optimize(args.get(2).map(String::as_str)),
+        None | Some("demo")             => run_all_demos(),
+        Some("run")                     => cli_run(&args[2..]),
+        Some("opt")                     => cli_optimize(args.get(2).map(String::as_str)),
         Some("analyze") | Some("stats") => cli_analyze(args.get(2).map(String::as_str)),
-        Some("dash")                  => cli_dash(args.get(2).map(String::as_str)),
-        Some("report")                => cli_report(args.get(2).map(String::as_str), args.get(3).map(String::as_str)),
-        Some("serve")                 => cli_serve(args.get(2).map(String::as_str), args.get(3).map(String::as_str)),
-        Some("help") | Some("--help") => print_help(),
+        Some("dash")                    => cli_dash(args.get(2).map(String::as_str)),
+        Some("report")                  => cli_report(args.get(2).map(String::as_str), args.get(3).map(String::as_str)),
+        Some("serve")                   => cli_serve(args.get(2).map(String::as_str), args.get(3).map(String::as_str)),
+        Some("export")                  => cli_export(args.get(2).map(String::as_str), args.get(3).map(String::as_str)),
+        Some("help") | Some("--help")   => print_help(),
         Some(unknown) => {
             eprintln!("Unknown command '{}'. Run 'astracore help' for usage.", unknown);
             std::process::exit(1);
@@ -24,57 +25,102 @@ fn main() {
 
 // ── CLI ───────────────────────────────────────────────────────────────────
 
-fn cli_run(path: Option<&str>) {
-    let path = match path {
-        Some(p) => p,
-        None => {
-            eprintln!("Usage: astracore run <file.aql>");
-            std::process::exit(1);
+/// Simulation backend selection.
+#[derive(Clone, Copy, PartialEq)]
+enum Backend { Statevector, Mps, Clifford }
+
+/// Parse `run` arguments: `<file.aql> [--backend sv|mps|clifford] [--bond-dim N]`
+fn cli_run(args: &[String]) {
+    if args.is_empty() {
+        eprintln!("Usage: astracore run <file.aql> [--backend statevector|mps|clifford] [--bond-dim N]");
+        std::process::exit(1);
+    }
+
+    let path = &args[0];
+    let mut backend = Backend::Statevector;
+    let mut bond_dim: usize = 64;
+
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--backend" | "-b" => {
+                i += 1;
+                backend = match args.get(i).map(String::as_str) {
+                    Some("mps")         => Backend::Mps,
+                    Some("clifford") | Some("stabilizer") => Backend::Clifford,
+                    Some("statevector") | Some("sv") | Some("default") => Backend::Statevector,
+                    other => {
+                        eprintln!("Unknown backend '{}'  (choices: statevector, mps, clifford)",
+                                  other.unwrap_or(""));
+                        std::process::exit(1);
+                    }
+                };
+            }
+            "--bond-dim" | "-d" => {
+                i += 1;
+                bond_dim = args.get(i)
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or_else(|| {
+                        eprintln!("--bond-dim requires a positive integer");
+                        std::process::exit(1);
+                    });
+            }
+            flag => { eprintln!("Unknown flag '{flag}'"); std::process::exit(1); }
         }
-    };
+        i += 1;
+    }
 
     let source = match std::fs::read_to_string(path) {
         Ok(s) => s,
-        Err(e) => { eprintln!("Cannot read '{}': {}", path, e); std::process::exit(1); }
+        Err(e) => { eprintln!("Cannot read '{}': {e}", path); std::process::exit(1); }
     };
 
+    let backend_name = match backend {
+        Backend::Statevector => "statevector",
+        Backend::Mps         => &format!("mps (bond-dim={bond_dim})"),
+        Backend::Clifford    => "clifford (stabilizer)",
+    };
     println!("━━━ AstraCore AQL Runner ━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("File: {path}\n");
+    println!("File   : {path}");
+    println!("Backend: {backend_name}\n");
 
     let program = match compiler::parse_source(&source) {
         Ok(p) => p,
         Err(e) => { eprintln!("{e}"); std::process::exit(1); }
     };
 
-    println!("Program IR:");
-    println!("  QREG {}", program.num_qubits);
-    for instr in &program.instructions {
-        println!("  {instr}");
-    }
-    println!();
-    println!(
-        "Circuit: {} gate(s) | {} measurement(s) | {} qubit(s)\n",
-        program.gate_count, program.measure_count, program.num_qubits
-    );
+    println!("Circuit: {} gate(s) | {} measurement(s) | {} qubit(s)\n",
+             program.gate_count, program.measure_count, program.num_qubits);
 
-    let result = match compiler::execute(&program) {
-        Ok(r) => r,
-        Err(e) => { eprintln!("Runtime error: {e}"); std::process::exit(1); }
+    let result = match backend {
+        Backend::Statevector => match compiler::execute(&program) {
+            Ok(r) => r,
+            Err(e) => { eprintln!("Runtime error: {e}"); std::process::exit(1); }
+        },
+        Backend::Mps => match astracore::simulator::execute_mps(&program, bond_dim) {
+            Ok(r) => r,
+            Err(e) => { eprintln!("MPS runtime error: {e}"); std::process::exit(1); }
+        },
+        Backend::Clifford => match astracore::simulator::execute_clifford(&program) {
+            Ok(r) => r,
+            Err(e) => { eprintln!("Clifford runtime error: {e}"); std::process::exit(1); }
+        },
     };
 
-    let display_probs = result.pre_measurement_probs.as_deref()
-        .unwrap_or(&result.final_probabilities);
-    let label = if result.pre_measurement_probs.is_some() {
-        "Pre-measurement state"
-    } else {
-        "Final state (no measurements)"
-    };
-
-    println!("{label}:");
-    for (lbl, prob) in result.significant_states(display_probs, 1e-6) {
-        println!("  |{lbl}⟩  {prob:.6}");
+    if !result.final_probabilities.is_empty() {
+        let display_probs = result.pre_measurement_probs.as_deref()
+            .unwrap_or(&result.final_probabilities);
+        let label = if result.pre_measurement_probs.is_some() {
+            "Pre-measurement state"
+        } else {
+            "Final state"
+        };
+        println!("{label}:");
+        for (lbl, prob) in result.significant_states(display_probs, 1e-6) {
+            println!("  |{lbl}⟩  {prob:.6}");
+        }
+        println!();
     }
-    println!();
 
     if !result.measurements.is_empty() {
         println!("Measurement results:");
@@ -84,6 +130,41 @@ fn cli_run(path: Option<&str>) {
         if let Some(bs) = result.bitstring() {
             println!("  Bitstring (q0…qN): {bs}");
         }
+    }
+}
+
+/// Export AQL to OpenQASM 2.0.
+fn cli_export(path: Option<&str>, out: Option<&str>) {
+    let path = path.unwrap_or_else(|| {
+        eprintln!("Usage: astracore export <file.aql> [output.qasm]");
+        std::process::exit(1);
+    });
+
+    let output = out.map(String::from).unwrap_or_else(|| {
+        let stem = std::path::Path::new(path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("circuit");
+        format!("{stem}.qasm")
+    });
+
+    let source = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => { eprintln!("Cannot read '{path}': {e}"); std::process::exit(1); }
+    };
+
+    println!("━━━ AstraCore → OpenQASM 2.0 Exporter ━━━━━━━━━━━━");
+    println!("Input : {path}");
+    println!("Output: {output}\n");
+
+    let qasm = match compiler::qasm_export::source_to_qasm(&source) {
+        Ok(q) => q,
+        Err(e) => { eprintln!("Export error: {e}"); std::process::exit(1); }
+    };
+
+    match std::fs::write(&output, &qasm) {
+        Ok(()) => println!("OpenQASM 2.0 written to '{output}'."),
+        Err(e) => { eprintln!("Write error: {e}"); std::process::exit(1); }
     }
 }
 
@@ -209,24 +290,32 @@ fn cli_serve(path: Option<&str>, port_arg: Option<&str>) {
 fn print_help() {
     println!("Usage: astracore [COMMAND] [ARGS]\n");
     println!("Commands:");
-    println!("  demo                      Run built-in demonstration circuits");
-    println!("  run <file.aql>            Parse and execute an AQL program");
-    println!("  opt <file.aql>            Optimize and display the circuit");
-    println!("  analyze <file.aql>        Static circuit analysis and profiling");
-    println!("  dash <file.aql>           Launch interactive TUI dashboard");
-    println!("  report <file.aql> [out]   Generate standalone HTML report");
-    println!("  serve <file.aql> [port]   Start local HTTP dashboard server");
-    println!("  help                      Show this message\n");
-    println!("AQL Instructions:");
-    println!("  QREG <n>              Declare n qubits (must be first)");
+    println!("  demo                              Run built-in demonstration circuits");
+    println!("  run <file.aql> [--backend B]      Execute an AQL program");
+    println!("       --backend statevector         Default: full state vector (≤30 qubits)");
+    println!("       --backend mps [--bond-dim N]  Matrix Product State (50–200+ qubits)");
+    println!("       --backend clifford            Stabilizer circuit (unlimited qubits)");
+    println!("  opt <file.aql>                    Optimize and display the circuit");
+    println!("  analyze <file.aql>                Static circuit analysis and profiling");
+    println!("  export <file.aql> [out.qasm]      Export circuit to OpenQASM 2.0");
+    println!("  dash <file.aql>                   Launch interactive TUI dashboard");
+    println!("  report <file.aql> [out.html]      Generate standalone HTML report");
+    println!("  serve <file.aql> [port]           Start local HTTP dashboard server");
+    println!("  help                              Show this message\n");
+    println!("AQL v2 Instructions:");
+    println!("  QREG <n>              Declare n qubits (must be first; up to 1000 for MPS/Clifford)");
     println!("  H|X|Y|Z|S|T <q>       Single-qubit gates");
-    println!("  RX|RY|RZ <q> <θ>      Rotation gates (radians)");
+    println!("  RX|RY|RZ <q> <θ>      Rotation gates (radians) — statevector/MPS only");
     println!("  PHASE <q> <θ>         Phase gate");
     println!("  CNOT|CZ|SWAP <c> <t>  Two-qubit gates");
-    println!("  CCX <c0> <c1> <t>     Toffoli (CCNOT) gate");
+    println!("  CCX <c0> <c1> <t>     Toffoli (CCNOT) gate — statevector/MPS only");
     println!("  MEASURE <q>           Measure qubit q");
     println!("  MEASURE_ALL           Measure all qubits");
-    println!("  BARRIER               Visual separator (no-op)\n");
+    println!("  BARRIER               Visual separator (no-op)");
+    println!("  REPEAT N … END        Unroll body N times at compile time  [v2]");
+    println!("  INCLUDE filename.aql  Inline another AQL file              [v2]");
+    println!("  GATE name n … END     Define a custom n-qubit gate");
+    println!("  CALL name q0 q1 …     Invoke a custom gate\n");
     println!("Constants: PI, TAU, PI_2, PI_4, PI_8, -PI, -PI_2, -PI_4");
     println!("Comments:  // or #");
 }
