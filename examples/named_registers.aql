@@ -1,0 +1,54 @@
+// Named Qubit Registers — AQL v2 Feature Demo
+//
+// AQL v2 allows naming qubit registers for readability:
+//   QREG name[size]   — declares a named register of `size` qubits
+//   H name[0]         — applies H to the first qubit of register `name`
+//   CNOT data[0] ancilla[0]  — cross-register two-qubit gates
+//
+// Named registers are resolved at parse time to absolute qubit indices.
+// The register declaration order determines the qubit numbering:
+//   QREG data[4]      → qubits 0, 1, 2, 3
+//   QREG ancilla[2]   → qubits 4, 5
+//
+// Run with:
+//   astracore run examples/named_registers.aql
+// or:
+//   astracore analyze examples/named_registers.aql
+//
+// Circuit: 3-qubit quantum error correction syndrome measurement.
+
+QREG data[3]      // Data qubits: 0, 1, 2
+QREG ancilla[2]   // Syndrome ancillae: 3, 4
+
+// Step 1: Prepare data register in arbitrary state (|+⟩ superposition)
+H data[0]
+H data[1]
+H data[2]
+
+// Step 2: Prepare ancilla in |+⟩ for syndrome measurement
+H ancilla[0]
+H ancilla[1]
+
+// Step 3: Syndrome check — CNOT from data qubits to ancilla
+// ancilla[0] measures parity of data[0] XOR data[1]
+CNOT data[0] ancilla[0]
+CNOT data[1] ancilla[0]
+
+// ancilla[1] measures parity of data[1] XOR data[2]
+CNOT data[1] ancilla[1]
+CNOT data[2] ancilla[1]
+
+// Step 4: Rotate ancilla back
+H ancilla[0]
+H ancilla[1]
+
+BARRIER
+
+// Step 5: Measure syndrome ancillae
+MEASURE ancilla[0]
+MEASURE ancilla[1]
+
+// Step 6: Measure data qubits
+MEASURE data[0]
+MEASURE data[1]
+MEASURE data[2]

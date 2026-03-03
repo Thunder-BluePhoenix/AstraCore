@@ -59,6 +59,13 @@ pub struct CircuitAnalysis {
 
     /// Number of distinct user-defined gate types declared.
     pub custom_gate_defs: usize,
+
+    /// True if every gate in the program belongs to the Clifford gate set
+    /// (H, X, Y, Z, S, CNOT, CZ, SWAP, and Clifford measurements).
+    ///
+    /// Non-Clifford gates: T, Rx, Ry, Rz, Phase, Toffoli, CallGate.
+    /// If `true`, the circuit can be simulated exactly with the Clifford backend.
+    pub is_clifford: bool,
 }
 
 impl CircuitAnalysis {
@@ -93,6 +100,8 @@ impl CircuitAnalysis {
         out.push_str(&format!("  Measurements   : {}\n", self.measure_count));
         out.push_str(&format!("  Control flow   : {}\n",
             if self.has_control_flow { "yes" } else { "no" }));
+        out.push_str(&format!("  Clifford-only  : {}\n",
+            if self.is_clifford { "yes  ✓  (can use --backend clifford)" } else { "no" }));
         if self.has_custom_gates {
             out.push_str(&format!(
                 "  Custom gates   : {} definition(s) declared\n",
@@ -146,12 +155,18 @@ pub fn analyze(program: &Program) -> CircuitAnalysis {
     let mut gate_histogram: HashMap<String, usize> = HashMap::new();
     let mut qubit_utilization = vec![0usize; program.num_qubits];
     let mut has_control_flow = false;
+    let mut is_clifford = true;
 
     for instr in &program.instructions {
         // ── Control flow ──────────────────────────────────────────────────
         if instr.is_control_flow() {
             has_control_flow = true;
             continue;
+        }
+
+        // ── Clifford tracking ─────────────────────────────────────────────
+        if !is_clifford_instr(instr) {
+            is_clifford = false;
         }
 
         // ── Measurements ──────────────────────────────────────────────────
@@ -230,7 +245,34 @@ pub fn analyze(program: &Program) -> CircuitAnalysis {
         has_control_flow,
         has_custom_gates: !program.gate_defs.is_empty(),
         custom_gate_defs: program.gate_defs.len(),
+        is_clifford,
     }
+}
+
+/// Returns `true` if the instruction belongs to the Clifford gate set
+/// (or is structural/measurement), `false` for non-Clifford gates.
+///
+/// Clifford gates: H, X, Y, Z, S, CNOT, CZ, SWAP, Measure, MeasureAll, Barrier, Label, Goto*.
+/// Non-Clifford:  T, Rx, Ry, Rz, Phase, Toffoli, CallGate (body unknown at analysis time).
+fn is_clifford_instr(instr: &Instruction) -> bool {
+    matches!(
+        instr,
+        Instruction::H(_)
+            | Instruction::X(_)
+            | Instruction::Y(_)
+            | Instruction::Z(_)
+            | Instruction::S(_)
+            | Instruction::Cnot { .. }
+            | Instruction::Cz { .. }
+            | Instruction::Swap { .. }
+            | Instruction::Measure(_)
+            | Instruction::MeasureAll
+            | Instruction::Barrier
+            | Instruction::Label(_)
+            | Instruction::Goto { .. }
+            | Instruction::GotoIf { .. }
+            | Instruction::GotoIfNot { .. }
+    )
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────
@@ -425,8 +467,43 @@ mod tests {
             measure_count: 0, circuit_depth: 0, two_qubit_gate_count: 0,
             gate_histogram: HashMap::new(), qubit_utilization: vec![],
             has_control_flow: false, has_custom_gates: false, custom_gate_defs: 0,
+            is_clifford: true,
         };
         assert_eq!(dummy.avg_gates_per_qubit(), 0.0);
+    }
+
+    // ── is_clifford ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_is_clifford_pure_clifford_circuit() {
+        // H + CNOT + Measure: all Clifford
+        let a = analyze(&prog("QREG 2\nH 0\nCNOT 0 1\nMEASURE_ALL"));
+        assert!(a.is_clifford);
+    }
+
+    #[test]
+    fn test_is_clifford_false_for_t_gate() {
+        let a = analyze(&prog("QREG 1\nH 0\nT 0"));
+        assert!(!a.is_clifford);
+    }
+
+    #[test]
+    fn test_is_clifford_false_for_rotation() {
+        let a = analyze(&prog("QREG 1\nRX 0 1.5"));
+        assert!(!a.is_clifford);
+    }
+
+    #[test]
+    fn test_is_clifford_false_for_toffoli() {
+        let a = analyze(&prog("QREG 3\nH 0\nCNOT 0 1\nCCX 0 1 2"));
+        assert!(!a.is_clifford);
+    }
+
+    #[test]
+    fn test_is_clifford_ghz_is_clifford() {
+        // GHZ uses only H and CNOT — all Clifford
+        let a = analyze(&prog("QREG 5\nH 0\nCNOT 0 1\nCNOT 0 2\nCNOT 0 3\nCNOT 0 4"));
+        assert!(a.is_clifford);
     }
 
     // ── body_depth helper ─────────────────────────────────────────────

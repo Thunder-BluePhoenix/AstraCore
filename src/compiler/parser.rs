@@ -46,6 +46,12 @@ pub fn parse(statements: Vec<Vec<Spanned>>) -> Result<Program, AqlError> {
     // ── Phase 0: Unroll all REPEAT N … END blocks ─────────────────────────
     let statements = unroll_repeats(statements)?;
 
+    // ── Phase 0b: Resolve named registers (QREG data[4]) ──────────────────
+    let statements = resolve_registers(statements)?;
+
+    // ── Phase 0c: Desugar IFMEASURED/IFNOTMEASURED … THEN … END ──────────
+    let statements = desugar_if_measured(statements)?;
+
     // ── Phase 1: Extract all GATE...END definitions ────────────────────────
     let (gate_defs, remaining) = extract_gate_defs(statements)?;
 
@@ -187,7 +193,10 @@ fn collect_repeat_body(
     while *i < stmts.len() {
         let stmt = &stmts[*i];
         match stmt.first().map(|s| &s.token) {
-            Some(Token::Gate) | Some(Token::Repeat) => {
+            Some(Token::Gate)
+            | Some(Token::Repeat)
+            | Some(Token::IfMeasured)
+            | Some(Token::IfNotMeasured) => {
                 depth += 1;
                 body.push(stmt.clone());
             }
@@ -208,6 +217,222 @@ fn collect_repeat_body(
         line: start_line,
         msg: "'REPEAT' block has no matching 'END'".into(),
     })
+}
+
+// ── AQL v2: Named register resolution ────────────────────────────────────
+//
+// Transforms `QREG data[4]` + `H data[0]` into `QREG 4` + `H 0`.
+//
+// Rules:
+//   - Multiple `QREG name[n]` declarations accumulate total qubits in order.
+//   - Cannot mix `QREG <int>` and `QREG name[n]` in the same program.
+//   - All `name[k]` references are resolved to absolute qubit indices.
+//   - Duplicate register names and out-of-bounds indices are errors.
+
+fn resolve_registers(
+    statements: Vec<Vec<Spanned>>,
+) -> Result<Vec<Vec<Spanned>>, AqlError> {
+    // Detect whether any named QREGs are present
+    let has_named = statements.iter().any(|stmt| {
+        matches!(stmt.first().map(|s| &s.token), Some(Token::Qreg))
+            && stmt.len() == 2
+            && matches!(stmt.get(1).map(|s| &s.token), Some(Token::RegRef { .. }))
+    });
+    if !has_named {
+        return Ok(statements); // fast path — nothing to do
+    }
+
+    // Ensure no mixed numeric QREG
+    let has_numeric = statements.iter().any(|stmt| {
+        matches!(stmt.first().map(|s| &s.token), Some(Token::Qreg))
+            && stmt.len() == 2
+            && matches!(stmt.get(1).map(|s| &s.token), Some(Token::Int(_)))
+    });
+    if has_numeric {
+        return Err(AqlError::Validation {
+            msg: "cannot mix 'QREG <n>' and named 'QREG name[n]' declarations".into(),
+        });
+    }
+
+    // Build register table: name → (base_qubit, size)
+    let mut reg_table: HashMap<String, (usize, usize)> = HashMap::new();
+    let mut total = 0usize;
+    // Collect in declaration order to assign sequential bases
+    for stmt in &statements {
+        if matches!(stmt.first().map(|s| &s.token), Some(Token::Qreg)) && stmt.len() == 2 {
+            if let Token::RegRef { name, num: size } = &stmt[1].token {
+                if *size == 0 {
+                    return Err(AqlError::Validation {
+                        msg: format!("register '{name}' must have size ≥ 1"),
+                    });
+                }
+                if reg_table.contains_key(name.as_str()) {
+                    return Err(AqlError::Validation {
+                        msg: format!("duplicate register name '{name}'"),
+                    });
+                }
+                reg_table.insert(name.clone(), (total, *size));
+                total += size;
+            }
+        }
+    }
+
+    // Rewrite: collapse all QREG name[n] → single QREG <total>, resolve refs
+    let mut out: Vec<Vec<Spanned>> = Vec::with_capacity(statements.len());
+    let mut emitted_qreg = false;
+
+    for stmt in statements {
+        // Named QREG declaration → emit one collapsed QREG <total>, skip rest
+        if matches!(stmt.first().map(|s| &s.token), Some(Token::Qreg))
+            && stmt.len() == 2
+            && matches!(stmt.get(1).map(|s| &s.token), Some(Token::RegRef { .. }))
+        {
+            if !emitted_qreg {
+                emitted_qreg = true;
+                let line = stmt[0].line;
+                out.push(vec![
+                    Spanned { token: Token::Qreg, line },
+                    Spanned { token: Token::Int(total), line },
+                ]);
+            }
+            continue;
+        }
+
+        // Resolve all RegRef tokens in this statement
+        let resolved: Result<Vec<Spanned>, AqlError> = stmt
+            .into_iter()
+            .map(|s| {
+                if let Token::RegRef { ref name, num } = s.token {
+                    let &(base, size) = reg_table.get(name.as_str()).ok_or_else(|| {
+                        let known: Vec<_> = reg_table.keys().cloned().collect();
+                        AqlError::Validation {
+                            msg: format!(
+                                "undefined register '{name}' — declared: {}",
+                                if known.is_empty() { "none".into() }
+                                else { known.join(", ") }
+                            ),
+                        }
+                    })?;
+                    if num >= size {
+                        return Err(AqlError::Validation {
+                            msg: format!(
+                                "'{name}[{num}]' is out of bounds \
+                                 (register '{name}' has {size} qubit(s), indices 0..{})",
+                                size - 1
+                            ),
+                        });
+                    }
+                    Ok(Spanned { token: Token::Int(base + num), line: s.line })
+                } else {
+                    Ok(s)
+                }
+            })
+            .collect();
+
+        out.push(resolved?);
+    }
+
+    Ok(out)
+}
+
+// ── AQL v2: IFMEASURED / IFNOTMEASURED desugaring ─────────────────────────
+//
+// `IFMEASURED <q> THEN … END`    → IFNOT q GOTO __im_N ; body ; LABEL __im_N
+// `IFNOTMEASURED <q> THEN … END` → IF    q GOTO __im_N ; body ; LABEL __im_N
+//
+// Generated labels use the prefix `__im_` — user labels must not start with this.
+
+fn desugar_if_measured(
+    statements: Vec<Vec<Spanned>>,
+) -> Result<Vec<Vec<Spanned>>, AqlError> {
+    let has_any = statements.iter().any(|s| {
+        matches!(
+            s.first().map(|t| &t.token),
+            Some(Token::IfMeasured) | Some(Token::IfNotMeasured)
+        )
+    });
+    if !has_any {
+        return Ok(statements); // fast path
+    }
+
+    let mut out: Vec<Vec<Spanned>> = Vec::new();
+    let mut i = 0;
+    let mut counter = 0usize;
+    desugar_slice(&statements, &mut i, &mut out, &mut counter)?;
+    Ok(out)
+}
+
+fn desugar_slice(
+    stmts: &[Vec<Spanned>],
+    i: &mut usize,
+    out: &mut Vec<Vec<Spanned>>,
+    counter: &mut usize,
+) -> Result<(), AqlError> {
+    while *i < stmts.len() {
+        let stmt = &stmts[*i];
+        match stmt.first().map(|s| &s.token) {
+            Some(Token::IfMeasured) | Some(Token::IfNotMeasured) => {
+                let is_if_measured = matches!(stmt[0].token, Token::IfMeasured);
+                let line = stmt[0].line;
+
+                // Syntax: IFMEASURED <q> THEN  (3 tokens)
+                if stmt.len() != 3 {
+                    return Err(AqlError::Parse {
+                        line,
+                        msg: format!(
+                            "'{}' expects 2 arguments (qubit index and THEN), got {}",
+                            stmt[0].token.display(),
+                            stmt.len().saturating_sub(1)
+                        ),
+                    });
+                }
+                let qubit_tok = stmt[1].clone();
+                if !matches!(stmt[2].token, Token::Then) {
+                    return Err(AqlError::Parse {
+                        line: stmt[2].line,
+                        msg: format!(
+                            "expected 'THEN' after qubit index in '{}', got '{}'",
+                            stmt[0].token.display(),
+                            stmt[2].token.display()
+                        ),
+                    });
+                }
+
+                *i += 1;
+                // Collect body up to matching END
+                let body = collect_repeat_body(stmts, i, line)?;
+
+                // Recursively desugar nested blocks
+                let mut body_out: Vec<Vec<Spanned>> = Vec::new();
+                let mut j = 0;
+                desugar_slice(&body, &mut j, &mut body_out, counter)?;
+
+                // Generate a unique internal label
+                let label_name = format!("__im_{counter}");
+                *counter += 1;
+
+                // IFMEASURED → branch on NOT (skip body if qubit==0)
+                // IFNOTMEASURED → branch on YES (skip body if qubit==1)
+                let branch_tok = if is_if_measured { Token::IfNot } else { Token::If };
+                out.push(vec![
+                    Spanned { token: branch_tok, line },
+                    qubit_tok,
+                    Spanned { token: Token::Goto, line },
+                    Spanned { token: Token::Ident(label_name.clone()), line },
+                ]);
+                out.extend(body_out);
+                out.push(vec![
+                    Spanned { token: Token::Label, line },
+                    Spanned { token: Token::Ident(label_name), line },
+                ]);
+            }
+            _ => {
+                out.push(stmt.clone());
+                *i += 1;
+            }
+        }
+    }
+    Ok(())
 }
 
 // ── Gate definition extraction ────────────────────────────────────────────
@@ -544,18 +769,33 @@ fn parse_statement(
             Item::Instr(Instruction::CallGate { name, qubits })
         }
 
-        // ── GATE / END / REPEAT are handled by pre-passes ─────────────
+        // ── GATE / END / REPEAT / IFMEASURED are handled by pre-passes ─
         Token::Gate => return Err(AqlError::Parse {
             line,
             msg: "'GATE' definition must not appear nested inside another statement".into(),
         }),
         Token::End => return Err(AqlError::Parse {
             line,
-            msg: "'END' without a matching 'GATE' or 'REPEAT' block".into(),
+            msg: "'END' without a matching 'GATE', 'REPEAT', or 'IFMEASURED' block".into(),
         }),
         Token::Repeat => return Err(AqlError::Parse {
             line,
             msg: "'REPEAT' block was not unrolled — internal compiler error".into(),
+        }),
+        Token::IfMeasured | Token::IfNotMeasured => return Err(AqlError::Parse {
+            line,
+            msg: "'IFMEASURED' block was not desugared — internal compiler error".into(),
+        }),
+        Token::Then => return Err(AqlError::Parse {
+            line,
+            msg: "'THEN' without a preceding 'IFMEASURED' or 'IFNOTMEASURED'".into(),
+        }),
+        Token::RegRef { name, num } => return Err(AqlError::Parse {
+            line,
+            msg: format!(
+                "register reference '{name}[{num}]' was not resolved — \
+                 did you declare 'QREG {name}[N]'?"
+            ),
         }),
 
         // ── Literals at statement start are errors ─────────────────────
@@ -970,6 +1210,117 @@ mod tests {
             compile("QREG 1\nEND"),
             Err(AqlError::Parse { .. })
         ));
+    }
+
+    // ── Named register tests ──────────────────────────────────────────
+
+    #[test]
+    fn test_named_register_single() {
+        let prog = compile("QREG data[4]\nH data[0]\nMEASURE data[3]").unwrap();
+        assert_eq!(prog.num_qubits, 4);
+        assert!(matches!(prog.instructions[0], Instruction::H(0)));
+        assert!(matches!(prog.instructions[1], Instruction::Measure(3)));
+    }
+
+    #[test]
+    fn test_named_register_two_registers() {
+        // data gets qubits 0-3, ancilla gets qubits 4-5
+        let prog = compile(
+            "QREG data[4]\nQREG ancilla[2]\nCNOT data[0] ancilla[0]\nMEASURE_ALL"
+        ).unwrap();
+        assert_eq!(prog.num_qubits, 6);
+        assert!(matches!(
+            prog.instructions[0],
+            Instruction::Cnot { control: 0, target: 4 }
+        ));
+    }
+
+    #[test]
+    fn test_named_register_backwards_compatible() {
+        // Unnamed QREG still works exactly as before
+        let prog = compile("QREG 3\nH 0\nH 1\nH 2").unwrap();
+        assert_eq!(prog.num_qubits, 3);
+    }
+
+    #[test]
+    fn test_error_named_register_out_of_bounds() {
+        // data has 2 qubits (0..1); data[2] is out of range
+        assert!(matches!(
+            compile("QREG data[2]\nH data[2]"),
+            Err(AqlError::Validation { .. })
+        ));
+    }
+
+    #[test]
+    fn test_error_named_register_mixed_with_numeric() {
+        assert!(matches!(
+            compile("QREG 4\nQREG ancilla[2]\nH 0"),
+            Err(AqlError::Validation { .. })
+        ));
+    }
+
+    #[test]
+    fn test_error_named_register_duplicate() {
+        assert!(matches!(
+            compile("QREG q[2]\nQREG q[2]\nH q[0]"),
+            Err(AqlError::Validation { .. })
+        ));
+    }
+
+    #[test]
+    fn test_error_named_register_undefined() {
+        // Use a register name that was never declared
+        assert!(matches!(
+            compile("QREG data[2]\nH ghost[0]"),
+            Err(AqlError::Validation { .. })
+        ));
+    }
+
+    // ── IFMEASURED sugar tests ────────────────────────────────────────
+
+    #[test]
+    fn test_ifmeasured_desugars() {
+        // IFMEASURED 0 THEN X 1 END should compile without error
+        let prog = compile(
+            "QREG 2\nH 0\nMEASURE 0\nIFMEASURED 0 THEN\n  X 1\nEND"
+        ).unwrap();
+        // Desugars to: H 0 / MEASURE 0 / IFNOT 0 GOTO __im_0 / X 1 / LABEL __im_0
+        assert_eq!(prog.instructions.len(), 5);
+        assert!(matches!(prog.instructions[2], Instruction::GotoIfNot { qubit: 0, .. }));
+        assert!(matches!(prog.instructions[3], Instruction::X(1)));
+    }
+
+    #[test]
+    fn test_ifnotmeasured_desugars() {
+        let prog = compile(
+            "QREG 2\nMEASURE 0\nIFNOTMEASURED 0 THEN\n  X 1\nEND"
+        ).unwrap();
+        // Desugars to: MEASURE 0 / IF 0 GOTO __im_0 / X 1 / LABEL __im_0
+        assert!(matches!(prog.instructions[1], Instruction::GotoIf { qubit: 0, .. }));
+        assert!(matches!(prog.instructions[2], Instruction::X(1)));
+    }
+
+    #[test]
+    fn test_ifmeasured_with_named_registers() {
+        let prog = compile(
+            "QREG ctrl[1]\nQREG tgt[1]\nMEASURE ctrl[0]\nIFMEASURED ctrl[0] THEN\n  X tgt[0]\nEND"
+        ).unwrap();
+        assert_eq!(prog.num_qubits, 2);
+        // ctrl[0]=0, tgt[0]=1
+        // instructions: MEASURE(0) / GotoIfNot{0,"__im_0"} / X(1) / Label("__im_0")
+        assert!(matches!(prog.instructions[1], Instruction::GotoIfNot { qubit: 0, .. }));
+        assert!(matches!(prog.instructions[2], Instruction::X(1)));
+    }
+
+    #[test]
+    fn test_ifmeasured_nested_in_repeat() {
+        // REPEAT + IFMEASURED together
+        let prog = compile(
+            "QREG 1\nMEASURE 0\nREPEAT 2\n  IFMEASURED 0 THEN\n    X 0\n  END\nEND"
+        ).unwrap();
+        // Each REPEAT iteration expands to: IFNOT 0 GOTO __im_N / X 0 / LABEL __im_N
+        // 2 iterations → 1 MEASURE + 2×3 = 7 total
+        assert_eq!(prog.instructions.len(), 7);
     }
 
     #[test]

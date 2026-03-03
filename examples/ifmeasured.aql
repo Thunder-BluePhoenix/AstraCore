@@ -1,0 +1,62 @@
+// IFMEASURED / IFNOTMEASURED — AQL v2 Conditional Flow Demo
+//
+// AQL v2 adds high-level conditional sugar that compiles to GOTO/LABEL:
+//
+//   IFMEASURED q THEN
+//     <body>
+//   END
+//   → compiles to: IFNOT q GOTO __im_0 / body / LABEL __im_0
+//
+//   IFNOTMEASURED q THEN
+//     <body>
+//   END
+//   → compiles to: IF q GOTO __im_1 / body / LABEL __im_1
+//
+// This is used extensively in quantum teleportation, error correction,
+// and mid-circuit measurement-based feedforward.
+//
+// Run with:
+//   astracore run examples/ifmeasured.aql
+//
+// Circuit: Quantum teleportation — teleport qubit 0 to qubit 2.
+//
+//   Alice has: q0 (message), q1 (her half of Bell pair)
+//   Bob has:   q2 (his half of Bell pair)
+//
+// Protocol:
+//   1. Create Bell pair on q1, q2
+//   2. Alice applies CNOT(q0 → q1) then H(q0)
+//   3. Alice measures q0 and q1
+//   4. Bob applies corrections based on Alice's measurement outcomes:
+//      - If q1 == 1: Bob applies X to q2
+//      - If q0 == 1: Bob applies Z to q2
+//   5. Bob's qubit q2 now holds the original state of q0
+
+QREG 3
+
+// Step 1: Prepare message qubit (q0) in |+⟩ = H|0⟩
+H 0
+
+// Step 2: Create Bell pair (q1, q2)
+H 1
+CNOT 1 2
+
+// Step 3: Bell measurement — entangle message with Alice's qubit
+CNOT 0 1
+H 0
+
+// Step 4: Measure Alice's qubits
+MEASURE 0
+MEASURE 1
+
+// Step 5: Feedforward corrections
+IFMEASURED 1 THEN
+  X 2        // Bob applies X if Alice's qubit 1 measured |1⟩
+END
+
+IFMEASURED 0 THEN
+  Z 2        // Bob applies Z if Alice's qubit 0 measured |1⟩
+END
+
+// Step 6: Measure Bob's qubit (should reproduce Alice's |+⟩ state)
+MEASURE 2

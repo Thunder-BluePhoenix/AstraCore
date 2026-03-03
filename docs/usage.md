@@ -57,6 +57,16 @@ To run without building a release binary use `cargo run --`:
 cargo run -- run examples/bell.aql
 ```
 
+### Python Package
+
+```bash
+pip install maturin
+cd astracore-py && maturin develop --release && cd ..
+python -c "import astracore; print(astracore.__version__)"
+```
+
+See [how_to_use_astracore.md](how_to_use_astracore.md) for the full Python API.
+
 ---
 
 ## CLI Quick Reference
@@ -70,22 +80,34 @@ astracore <command> [arguments]
 | `run <file.aql>` | Compile and execute an AQL source file |
 | `opt <file.aql>` | Run peephole optimizer then execute |
 | `analyze <file.aql>` | Static circuit analysis (no execution) |
+| `export <file.aql> [out.qasm]` | Export to OpenQASM 2.0 |
+| `import <file.qasm>` | Import and run an OpenQASM 2.0 file |
+| `dash <file.aql>` | Terminal TUI dashboard |
+| `report <file.aql> [out.html]` | Standalone HTML report |
+| `serve <file.aql> [port]` | Interactive browser dashboard (default :8080) |
 | `demo` | Run all built-in demonstration circuits |
 | `help` | Show help text |
+
+**Backend flags:** `--backend mps/clifford/sparse`, `--bond-dim N`, `--shots N`
 
 ### Examples
 
 ```bash
 # Run a circuit
 astracore run examples/bell.aql
-
-# Run with peephole optimization applied first
-astracore opt examples/ghz.aql
+astracore run --backend mps examples/ghz_50q_mps.aql
+astracore run --backend clifford examples/clifford_1000q.aql
+astracore run --shots 1000 examples/ghz.aql
 
 # Print circuit metrics without running
 astracore analyze examples/teleport.aql
 
-# Run all built-in demos (Bell, GHZ, Grover, teleportation, noise, ...)
+# Dashboard
+astracore dash examples/bell.aql
+astracore report examples/ghz.aql report.html
+astracore serve examples/bell.aql 8080
+
+# Run all built-in demos
 astracore demo
 ```
 
@@ -560,4 +582,4 @@ cargo test -- --nocapture
 cargo test --release
 ```
 
-Current test count: **208 tests, 0 failures** (+ 2 doctests).
+Current test count: **352 tests, 0 failures** (+ 7 doctests).

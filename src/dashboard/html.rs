@@ -80,6 +80,18 @@ body {
 .btn-run  { background: #1a3a1a; border-color: #3fb950; color: #3fb950; font-weight: bold; }
 .btn-run:hover   { background: #264d26; }
 .btn-run:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn-save { background: #1a2e4a; border-color: #58a6ff; color: #58a6ff; }
+.btn-save:hover  { background: #243a5e; }
+.shots-row { display:flex; align-items:center; gap:5px; flex-shrink:0; }
+.shots-input {
+  width: 72px; background: #010409; border: 1px solid #30363d; border-radius: 4px;
+  color: #e6edf3; font-family: 'Courier New', monospace; font-size: 0.8em;
+  padding: 3px 6px; outline: none;
+}
+.shots-input:focus { border-color: #58a6ff60; }
+.btn-shots { background: #2d1f4e; border-color: #a371f7; color: #a371f7; }
+.btn-shots:hover { background: #3d2a6a; }
+.btn-shots:disabled { opacity: 0.45; cursor: not-allowed; }
 #editor {
   flex: 1; background: #010409; color: #e6edf3;
   border: 1px solid #30363d; border-radius: 6px;
@@ -157,6 +169,22 @@ td:first-child { color: #8b949e; }
 .val { color: #3fb950; font-weight: bold; }
 canvas { max-height: 185px; width: 100% !important; }
 .badge-yes { color: #3fb950; } .badge-no { color: #4d5560; }
+/* ── Share URL toast ── */
+#shareToast {
+  position: fixed; bottom: 18px; right: 18px;
+  background: #21262d; border: 1px solid #3fb950; color: #3fb950;
+  border-radius: 6px; padding: 8px 14px; font-size: 0.8em;
+  opacity: 0; transition: opacity 0.3s; pointer-events: none; z-index: 100;
+}
+#shareToast.show { opacity: 1; }
+/* ── Mobile ── */
+@media (max-width: 780px) {
+  body { overflow: auto; }
+  .app { flex-direction: column; }
+  .editor-panel { width: 100% !important; max-width: 100%; border-right: none; border-bottom: 1px solid #30363d; min-height: 300px; }
+  .results-panel { overflow: visible; }
+  .results-grid { grid-template-columns: 1fr; }
+}
 </style>
 </head>
 <body>
@@ -181,11 +209,18 @@ canvas { max-height: 185px; width: 100% !important; }
     <!-- ── Editor view ── -->
     <div id="editorView">
       <div class="toolbar">
-        <button class="btn" id="openBtn">📂 Open .aql</button>
+        <button class="btn" id="openBtn">📂 Open</button>
         <input type="file" id="fileInput" accept=".aql,.txt" hidden>
+        <button class="btn btn-save" id="saveBtn">💾 Save</button>
+        <button class="btn btn-save" id="shareBtn" title="Copy shareable URL to clipboard">🔗</button>
         <span class="filename" id="filename">bell.aql</span>
         <span class="kbd-hint">Ctrl+↵</span>
         <button class="btn btn-run" id="runBtn">▶ Execute</button>
+      </div>
+      <div class="shots-row" style="padding: 0 0 4px 0;">
+        <span style="color:#8b949e;font-size:0.78em">Shots:</span>
+        <input type="number" id="shotsInput" class="shots-input" value="1000" min="1" max="100000" title="Number of shots for statistical sampling">
+        <button class="btn btn-shots" id="shotsBtn" title="Run N shots and show measurement histogram">🎲 Sample</button>
       </div>
 
       <textarea id="editor" spellcheck="false" autocomplete="off">// Bell State  (|00⟩ + |11⟩) / √2
@@ -360,11 +395,16 @@ MEASURE_ALL</code><button class="syn-try-btn" onclick="trySyntaxExample(this)">&
           <div class="card-title">MEASUREMENT OUTCOMES</div>
           <div id="measContent"></div>
         </div>
+        <div class="card full-width" id="shotsCard" style="display:none">
+          <div class="card-title" id="shotsCardTitle">SHOT HISTOGRAM</div>
+          <canvas id="shotsChart" style="max-height:220px"></canvas>
+        </div>
       </div>
     </div>
   </div>
 
 </div><!-- /app -->
+<div id="shareToast">✓ URL copied to clipboard</div>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script>
@@ -376,6 +416,42 @@ const runBtn    = document.getElementById('runBtn');
 const errorMsg  = document.getElementById('errorMsg');
 const filename  = document.getElementById('filename');
 const fileInput = document.getElementById('fileInput');
+const shotsBtn  = document.getElementById('shotsBtn');
+const shotsInput= document.getElementById('shotsInput');
+
+// ── URL hash sharing ───────────────────────────────────────────────
+function encodeCircuit(src) {
+  try { return btoa(unescape(encodeURIComponent(src))); } catch(e) { return ''; }
+}
+function decodeCircuit(hash) {
+  try { return decodeURIComponent(escape(atob(hash))); } catch(e) { return null; }
+}
+(function loadFromHash() {
+  var h = location.hash.slice(1);
+  if (!h) return;
+  var src = decodeCircuit(h);
+  if (src) { editor.value = src; filename.textContent = 'shared.aql'; }
+})();
+
+// ── Save .aql ─────────────────────────────────────────────────────
+document.getElementById('saveBtn').onclick = function() {
+  var blob = new Blob([editor.value], { type: 'text/plain' });
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename.textContent || 'circuit.aql';
+  a.click();
+  URL.revokeObjectURL(a.href);
+};
+
+// ── Share URL ─────────────────────────────────────────────────────
+document.getElementById('shareBtn').onclick = function() {
+  var url = location.origin + location.pathname + '#' + encodeCircuit(editor.value);
+  navigator.clipboard.writeText(url).then(function() {
+    var toast = document.getElementById('shareToast');
+    toast.classList.add('show');
+    setTimeout(function() { toast.classList.remove('show'); }, 2000);
+  });
+};
 
 // ── Tab switching ──────────────────────────────────────────────────
 function switchTab(name) {
@@ -435,6 +511,8 @@ async function runCircuit() {
   runBtn.disabled = true;
   runBtn.textContent = '\u23f3 Running\u2026';
   errorMsg.textContent = '';
+  // Update URL hash for sharing
+  history.replaceState(null, '', '#' + encodeCircuit(source));
   try {
     const res = await fetch('/api/run', {
       method: 'POST',
@@ -454,6 +532,72 @@ async function runCircuit() {
     runBtn.disabled = false;
     runBtn.textContent = '\u25b6 Execute';
   }
+}
+
+// ── Shot sampling ──────────────────────────────────────────────────
+shotsBtn.onclick = runShots;
+async function runShots() {
+  const source = editor.value.trim();
+  if (!source) return;
+  const shots = parseInt(shotsInput.value, 10) || 1000;
+  shotsBtn.disabled = true;
+  shotsBtn.textContent = '\u23f3\u2026';
+  errorMsg.textContent = '';
+  try {
+    const res = await fetch('/api/shots', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source, shots })
+    });
+    if (!res.ok) { errorMsg.textContent = '\u2717 HTTP ' + res.status; return; }
+    const data = await res.json();
+    if (data.error) {
+      errorMsg.textContent = '\u2717 ' + data.error;
+    } else {
+      renderShotsResults(data);
+    }
+  } catch (err) {
+    errorMsg.textContent = '\u2717 ' + err.message;
+  } finally {
+    shotsBtn.disabled = false;
+    shotsBtn.textContent = '\uD83C\uDFB2 Sample';
+  }
+}
+
+function renderShotsResults(d) {
+  var card = document.getElementById('shotsCard');
+  card.style.display = 'block';
+  document.getElementById('shotsCardTitle').textContent =
+    'SHOT HISTOGRAM — ' + d.n_shots.toLocaleString() + ' shots, ' + d.n_qubits + ' qubits';
+  var entries = Object.entries(d.counts).sort((a, b) => a[0].localeCompare(b[0]));
+  var labels = entries.map(e => '|' + e[0] + '\u27e9');
+  var vals   = entries.map(e => e[1]);
+  if (chartRefs.has('shotsChart')) { chartRefs.get('shotsChart').destroy(); }
+  chartRefs.set('shotsChart', new Chart(document.getElementById('shotsChart'), {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        data: vals,
+        backgroundColor: '#a371f7cc',
+        borderColor: '#a371f7', borderWidth: 1,
+        label: 'count'
+      }]
+    },
+    options: {
+      animation: { duration: 280 },
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: {
+          label: ctx => ' ' + ctx.parsed.y + '  (' + (ctx.parsed.y / d.n_shots * 100).toFixed(1) + '%)'
+        }}
+      },
+      scales: {
+        x: { grid: { color: '#1c2128' }, ticks: { color: '#8b949e', font: { family: 'Courier New', size: 11 } } },
+        y: { grid: { color: '#1c2128' }, ticks: { color: '#8b949e' }, min: 0 }
+      }
+    }
+  }));
 }
 
 // ── Example circuits ───────────────────────────────────────────────
@@ -831,7 +975,7 @@ function renderResults(d) {
   }
 }
 
-// Auto-run the default Bell circuit on page load
+// Auto-run on page load (shared URL or default Bell circuit)
 window.addEventListener('DOMContentLoaded', () => setTimeout(runCircuit, 120));
 </script>
 </body>

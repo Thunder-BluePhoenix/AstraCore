@@ -35,6 +35,16 @@ name = "statevector_scaling"
 harness = false
 path = "benches/criterion/statevector_scaling.rs"
 
+[[bench]]
+name = "mps_scaling"
+harness = false
+path = "benches/criterion/mps_scaling.rs"
+
+[[bench]]
+name = "clifford_scale"
+harness = false
+path = "benches/criterion/clifford_scale.rs"
+
 [profile.release]
 opt-level = 3
 lto = true

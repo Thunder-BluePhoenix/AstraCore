@@ -1,2 +1,56 @@
+# ── Rust ──────────────────────────────────────────────────────────────────────
 /target
+astracore-py/target
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+
+# Virtual environments
+.venv/
+venv/
+env/
+.env/
+ENV/
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+*.egg
+*.whl
+*.tar.gz
+MANIFEST
+
+# Maturin / PyO3 compiled extension
+*.so
+*.dll
+astracore.pyd
+astracore/*.pyd
+astracore/*.so
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# ── IDE / Editor ──────────────────────────────────────────────────────────────
 .claude
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+*~
+
+# ── Generated output ──────────────────────────────────────────────────────────
+*.html
+!docs/**/*.html
+
+# Criterion benchmark output (large, reproducible)
+target/criterion/
+
+# Qiskit comparison results
+benches/vs_qiskit/astracore_*.txt
+benches/vs_qiskit/qiskit_results.txt

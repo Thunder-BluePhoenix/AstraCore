@@ -1,0 +1,185 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]*'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ── Build pre-compiled binaries ────────────────────────────────────────────
+  build-binaries:
+    name: Binary (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux x86_64 (glibc)
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+            artifact: astracore-linux-x86_64
+            binary: astracore
+
+          # Linux x86_64 (musl — fully static, runs anywhere)
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-22.04
+            artifact: astracore-linux-x86_64-musl
+            binary: astracore
+            musl: true
+
+          # macOS x86_64 (Intel)
+          - target: x86_64-apple-darwin
+            os: macos-13
+            artifact: astracore-macos-x86_64
+            binary: astracore
+
+          # macOS arm64 (Apple Silicon)
+          - target: aarch64-apple-darwin
+            os: macos-14
+            artifact: astracore-macos-arm64
+            binary: astracore
+
+          # Windows x86_64
+          - target: x86_64-pc-windows-msvc
+            os: windows-2022
+            artifact: astracore-windows-x86_64
+            binary: astracore.exe
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install musl tools (Linux musl only)
+        if: matrix.musl
+        run: sudo apt-get install -y musl-tools
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }} --bin astracore
+
+      - name: Package binary (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          cp target/${{ matrix.target }}/release/astracore ${{ matrix.binary }}
+          tar czf ${{ matrix.artifact }}.tar.gz ${{ matrix.binary }} README.md LICENSE-MIT LICENSE-APACHE
+          sha256sum ${{ matrix.artifact }}.tar.gz > ${{ matrix.artifact }}.tar.gz.sha256
+
+      - name: Package binary (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Copy-Item target\${{ matrix.target }}\release\astracore.exe ${{ matrix.binary }}
+          Compress-Archive -Path ${{ matrix.binary }}, README.md, LICENSE-MIT, LICENSE-APACHE `
+            -DestinationPath ${{ matrix.artifact }}.zip
+          (Get-FileHash ${{ matrix.artifact }}.zip -Algorithm SHA256).Hash.ToLower() + `
+            "  ${{ matrix.artifact }}.zip" | Out-File -Encoding ASCII ${{ matrix.artifact }}.zip.sha256
+
+      - name: Upload artifact (Unix)
+        if: runner.os != 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            ${{ matrix.artifact }}.tar.gz
+            ${{ matrix.artifact }}.tar.gz.sha256
+
+      - name: Upload artifact (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            ${{ matrix.artifact }}.zip
+            ${{ matrix.artifact }}.zip.sha256
+
+  # ── Build Python wheels via maturin ───────────────────────────────────────
+  build-wheels:
+    name: Python wheel (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+          - target: x86_64-apple-darwin
+            os: macos-13
+          - target: aarch64-apple-darwin
+            os: macos-14
+          - target: x86_64-pc-windows-msvc
+            os: windows-2022
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install maturin
+        run: pip install maturin
+
+      - name: Build wheel
+        working-directory: astracore-py
+        run: maturin build --release --target ${{ matrix.target }} --out dist
+
+      - name: Upload wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.target }}
+          path: astracore-py/dist/*.whl
+
+  # ── Create GitHub Release ──────────────────────────────────────────────────
+  release:
+    name: Create Release
+    needs: [build-binaries, build-wheels]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Extract release notes from CHANGELOG
+        id: notes
+        run: |
+          TAG="${{ github.ref_name }}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          # Extract section for this version if CHANGELOG exists
+          if [ -f CHANGELOG.md ]; then
+            awk "/^## \[?${TAG#v}/{found=1; next} found && /^## /{exit} found{print}" \
+              CHANGELOG.md > release_notes.md
+          else
+            echo "Release $TAG" > release_notes.md
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: AstraCore ${{ steps.notes.outputs.tag }}
+          body_path: release_notes.md
+          files: |
+            artifacts/**/*.tar.gz
+            artifacts/**/*.tar.gz.sha256
+            artifacts/**/*.zip
+            artifacts/**/*.zip.sha256
+            artifacts/**/*.whl
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}

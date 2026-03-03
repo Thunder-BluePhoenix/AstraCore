@@ -13,6 +13,8 @@
 /// It handles both simple circuits (no control flow) and full hybrid programs.
 pub mod executor;
 pub mod scheduler;
+pub mod shots;
 
 pub use executor::{execute, ExecutionResult, MeasurementRecord};
 pub use scheduler::schedule;
+pub use shots::{run_shots, ShotResult};

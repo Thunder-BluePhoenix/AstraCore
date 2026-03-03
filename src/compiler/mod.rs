@@ -9,11 +9,16 @@
 /// - `REPEAT N … END` loops (unrolled at parse time)
 /// - `INCLUDE filename.aql` (file-level source inclusion)
 /// - `parse_source_file(path)` — reads, preprocesses, and compiles `.aql` files
+/// - `QREG name[n]` named qubit registers (resolved to absolute indices)
+/// - `IFMEASURED q THEN … END` / `IFNOTMEASURED q THEN … END` conditional sugar
+/// - `error::Diagnostic` — rich error output with source context and "did you mean?"
 pub mod analysis;
+pub mod error;
 pub mod ir;
 pub mod lexer;
 pub mod parser;
 pub mod qasm_export;
+pub mod qasm_import;
 
 pub use analysis::{analyze, CircuitAnalysis};
 pub use crate::runtime::{execute, ExecutionResult, MeasurementRecord};

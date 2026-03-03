@@ -15,6 +15,7 @@ fn main() {
         Some("report")                  => cli_report(args.get(2).map(String::as_str), args.get(3).map(String::as_str)),
         Some("serve")                   => cli_serve(args.get(2).map(String::as_str), args.get(3).map(String::as_str)),
         Some("export")                  => cli_export(args.get(2).map(String::as_str), args.get(3).map(String::as_str)),
+        Some("import")                  => cli_import(args.get(2).map(String::as_str)),
         Some("help") | Some("--help")   => print_help(),
         Some(unknown) => {
             eprintln!("Unknown command '{}'. Run 'astracore help' for usage.", unknown);
@@ -27,18 +28,19 @@ fn main() {
 
 /// Simulation backend selection.
 #[derive(Clone, Copy, PartialEq)]
-enum Backend { Statevector, Mps, Clifford }
+enum Backend { Statevector, Mps, Clifford, Sparse }
 
-/// Parse `run` arguments: `<file.aql> [--backend sv|mps|clifford] [--bond-dim N]`
+/// Parse `run` arguments: `<file.aql> [--backend sv|mps|clifford|sparse] [--bond-dim N] [--shots N]`
 fn cli_run(args: &[String]) {
     if args.is_empty() {
-        eprintln!("Usage: astracore run <file.aql> [--backend statevector|mps|clifford] [--bond-dim N]");
+        eprintln!("Usage: astracore run <file.aql> [--backend statevector|mps|clifford|sparse] [--bond-dim N] [--shots N]");
         std::process::exit(1);
     }
 
     let path = &args[0];
     let mut backend = Backend::Statevector;
     let mut bond_dim: usize = 64;
+    let mut n_shots: Option<usize> = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -48,9 +50,10 @@ fn cli_run(args: &[String]) {
                 backend = match args.get(i).map(String::as_str) {
                     Some("mps")         => Backend::Mps,
                     Some("clifford") | Some("stabilizer") => Backend::Clifford,
+                    Some("sparse")      => Backend::Sparse,
                     Some("statevector") | Some("sv") | Some("default") => Backend::Statevector,
                     other => {
-                        eprintln!("Unknown backend '{}'  (choices: statevector, mps, clifford)",
+                        eprintln!("Unknown backend '{}'  (choices: statevector, mps, clifford, sparse)",
                                   other.unwrap_or(""));
                         std::process::exit(1);
                     }
@@ -65,6 +68,15 @@ fn cli_run(args: &[String]) {
                         std::process::exit(1);
                     });
             }
+            "--shots" | "-s" => {
+                i += 1;
+                n_shots = Some(args.get(i)
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or_else(|| {
+                        eprintln!("--shots requires a positive integer");
+                        std::process::exit(1);
+                    }));
+            }
             flag => { eprintln!("Unknown flag '{flag}'"); std::process::exit(1); }
         }
         i += 1;
@@ -76,13 +88,18 @@ fn cli_run(args: &[String]) {
     };
 
     let backend_name = match backend {
-        Backend::Statevector => "statevector",
-        Backend::Mps         => &format!("mps (bond-dim={bond_dim})"),
-        Backend::Clifford    => "clifford (stabilizer)",
+        Backend::Statevector => "statevector".to_string(),
+        Backend::Mps         => format!("mps (bond-dim={bond_dim})"),
+        Backend::Clifford    => "clifford (stabilizer)".to_string(),
+        Backend::Sparse      => "sparse statevector".to_string(),
     };
     println!("━━━ AstraCore AQL Runner ━━━━━━━━━━━━━━━━━━━━━━━━");
     println!("File   : {path}");
-    println!("Backend: {backend_name}\n");
+    println!("Backend: {backend_name}");
+    if let Some(shots) = n_shots {
+        println!("Shots  : {shots}");
+    }
+    println!();
 
     let program = match compiler::parse_source(&source) {
         Ok(p) => p,
@@ -92,6 +109,16 @@ fn cli_run(args: &[String]) {
     println!("Circuit: {} gate(s) | {} measurement(s) | {} qubit(s)\n",
              program.gate_count, program.measure_count, program.num_qubits);
 
+    // ── Shot-based sampling mode ──────────────────────────────────────────
+    if let Some(shots) = n_shots {
+        let shot_result = run_shots_with_backend(&program, shots, backend, bond_dim);
+        println!("Shot sampling — {shots} runs:");
+        println!();
+        shot_result.print_histogram();
+        return;
+    }
+
+    // ── Single-run mode ───────────────────────────────────────────────────
     let result = match backend {
         Backend::Statevector => match compiler::execute(&program) {
             Ok(r) => r,
@@ -104,6 +131,10 @@ fn cli_run(args: &[String]) {
         Backend::Clifford => match astracore::simulator::execute_clifford(&program) {
             Ok(r) => r,
             Err(e) => { eprintln!("Clifford runtime error: {e}"); std::process::exit(1); }
+        },
+        Backend::Sparse => match astracore::simulator::execute_sparse(&program) {
+            Ok(r) => r,
+            Err(e) => { eprintln!("Sparse runtime error: {e}"); std::process::exit(1); }
         },
     };
 
@@ -129,6 +160,86 @@ fn cli_run(args: &[String]) {
         }
         if let Some(bs) = result.bitstring() {
             println!("  Bitstring (q0…qN): {bs}");
+        }
+    }
+}
+
+/// Run a program `n_shots` times using the selected backend, collecting outcomes.
+fn run_shots_with_backend(
+    program: &astracore::compiler::ir::Program,
+    n_shots: usize,
+    backend: Backend,
+    bond_dim: usize,
+) -> astracore::runtime::ShotResult {
+    use std::collections::HashMap;
+
+    let mut counts: HashMap<String, usize> = HashMap::new();
+
+    for _ in 0..n_shots {
+        let result = match backend {
+            Backend::Statevector => astracore::runtime::execute(program),
+            Backend::Sparse      => astracore::simulator::execute_sparse(program),
+            Backend::Mps         => astracore::simulator::execute_mps(program, bond_dim),
+            Backend::Clifford    => astracore::simulator::execute_clifford(program),
+        };
+        let result = match result {
+            Ok(r) => r,
+            Err(e) => { eprintln!("Shot error: {e}"); std::process::exit(1); }
+        };
+        let key = if result.measurements.is_empty() {
+            "(no measurement)".to_string()
+        } else if let Some(bs) = result.bitstring() {
+            bs
+        } else {
+            (0..result.num_qubits)
+                .map(|q| match result.outcome(q) {
+                    Some(true)  => '1',
+                    Some(false) => '0',
+                    None        => '?',
+                })
+                .collect()
+        };
+        *counts.entry(key).or_insert(0) += 1;
+    }
+
+    astracore::runtime::ShotResult { counts, n_shots, n_qubits: program.num_qubits }
+}
+
+/// Import and run an OpenQASM 2.0 file.
+fn cli_import(path: Option<&str>) {
+    let path = path.unwrap_or_else(|| {
+        eprintln!("Usage: astracore import <file.qasm>");
+        std::process::exit(1);
+    });
+    let source = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => { eprintln!("Cannot read '{path}': {e}"); std::process::exit(1); }
+    };
+    println!("━━━ AstraCore OpenQASM 2.0 Importer ━━━━━━━━━━━━━━");
+    println!("File: {path}\n");
+    let program = match compiler::qasm_import::from_qasm(&source) {
+        Ok(p) => p,
+        Err(e) => { eprintln!("QASM parse error: {e}"); std::process::exit(1); }
+    };
+    println!("Circuit: {} gate(s) | {} qubit(s)\n",
+             program.gate_count, program.num_qubits);
+    let result = match compiler::execute(&program) {
+        Ok(r) => r,
+        Err(e) => { eprintln!("Runtime error: {e}"); std::process::exit(1); }
+    };
+    if !result.final_probabilities.is_empty() {
+        let display_probs = result.pre_measurement_probs.as_deref()
+            .unwrap_or(&result.final_probabilities);
+        println!("Final state:");
+        for (lbl, prob) in result.significant_states(display_probs, 1e-6) {
+            println!("  |{lbl}⟩  {prob:.6}");
+        }
+        println!();
+    }
+    if !result.measurements.is_empty() {
+        println!("Measurement results:");
+        for m in &result.measurements {
+            println!("  q{}  →  {}", m.qubit, m.outcome as u8);
         }
     }
 }
@@ -295,9 +406,12 @@ fn print_help() {
     println!("       --backend statevector         Default: full state vector (≤30 qubits)");
     println!("       --backend mps [--bond-dim N]  Matrix Product State (50–200+ qubits)");
     println!("       --backend clifford            Stabilizer circuit (unlimited qubits)");
+    println!("       --backend sparse              Sparse statevector (low-entanglement)");
+    println!("       --shots N                     Run N times, output measurement histogram");
     println!("  opt <file.aql>                    Optimize and display the circuit");
     println!("  analyze <file.aql>                Static circuit analysis and profiling");
     println!("  export <file.aql> [out.qasm]      Export circuit to OpenQASM 2.0");
+    println!("  import <file.qasm>                Import and run an OpenQASM 2.0 file");
     println!("  dash <file.aql>                   Launch interactive TUI dashboard");
     println!("  report <file.aql> [out.html]      Generate standalone HTML report");
     println!("  serve <file.aql> [port]           Start local HTTP dashboard server");

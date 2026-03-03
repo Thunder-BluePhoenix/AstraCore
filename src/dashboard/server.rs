@@ -20,6 +20,7 @@ use axum::{
 
 use crate::compiler;
 use crate::dashboard::{html::render_server_html, DashboardData};
+use crate::runtime::run_shots;
 
 // ── Public API ────────────────────────────────────────────────────────────
 
@@ -41,8 +42,9 @@ pub fn serve(data: DashboardData, port: u16) {
 async fn async_serve(data: Arc<DashboardData>, port: u16) {
     let app = Router::new()
         .route("/", get(handler_index))
-        .route("/api/data", get(handler_data))
-        .route("/api/run",  post(handler_run))
+        .route("/api/data",  get(handler_data))
+        .route("/api/run",   post(handler_run))
+        .route("/api/shots", post(handler_shots))
         .with_state(data);
 
     let addr = format!("0.0.0.0:{}", port);
@@ -102,11 +104,44 @@ async fn handler_run(
     axum::Json(build_json(&data))
 }
 
+/// `POST /api/shots` — run `{ "source": "<aql>", "shots": N }` and return a
+/// histogram of measurement bitstrings.
+///
+/// Returns `{ "counts": { "00": 512, "11": 488 }, "n_shots": 1000, "n_qubits": 2 }`
+/// or `{ "error": "…" }` on failure.
+async fn handler_shots(
+    axum::Json(req): axum::Json<ShotsRequest>,
+) -> axum::Json<serde_json::Value> {
+    let program = match compiler::parse_source(&req.source) {
+        Ok(p)  => p,
+        Err(e) => return axum::Json(serde_json::json!({ "error": e.to_string() })),
+    };
+    let shots = req.shots.max(1).min(100_000);
+    let sr = match run_shots(&program, shots) {
+        Ok(r)  => r,
+        Err(e) => return axum::Json(serde_json::json!({ "error": e.to_string() })),
+    };
+    let counts: serde_json::Map<String, serde_json::Value> = sr.counts.iter()
+        .map(|(k, &v)| (k.clone(), serde_json::Value::Number(v.into())))
+        .collect();
+    axum::Json(serde_json::json!({
+        "counts":   serde_json::Value::Object(counts),
+        "n_shots":  sr.n_shots,
+        "n_qubits": sr.n_qubits,
+    }))
+}
+
 // ── Request / response helpers ────────────────────────────────────────────
 
 #[derive(serde::Deserialize)]
 struct RunRequest {
     source: String,
+}
+
+#[derive(serde::Deserialize)]
+struct ShotsRequest {
+    source: String,
+    shots:  usize,
 }
 
 /// Serialize a [`DashboardData`] to a JSON value understood by the SPA.

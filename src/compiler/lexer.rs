@@ -48,6 +48,14 @@ pub enum Token {
     // ── AQL v2: structured loop ───────────────────────────────────────
     Repeat,   // REPEAT <n> … END          — unrolled at parse time
 
+    // ── AQL v2: conditional block sugar ──────────────────────────────
+    IfMeasured,     // IFMEASURED <q> THEN … END   — if qubit==1
+    IfNotMeasured,  // IFNOTMEASURED <q> THEN … END — if qubit==0
+    Then,           // THEN                          — opens the body
+
+    // ── AQL v2: named register reference: ident[n] ───────────────────
+    RegRef { name: String, num: usize },  // e.g. data[0], ancilla[2]
+
     // ── Literals ─────────────────────────────────────────────────────────
     Int(usize),
     Float(f64),
@@ -85,7 +93,11 @@ impl Token {
             Token::Gate       => "GATE".into(),
             Token::End        => "END".into(),
             Token::Call       => "CALL".into(),
-            Token::Repeat     => "REPEAT".into(),
+            Token::Repeat        => "REPEAT".into(),
+            Token::IfMeasured    => "IFMEASURED".into(),
+            Token::IfNotMeasured => "IFNOTMEASURED".into(),
+            Token::Then          => "THEN".into(),
+            Token::RegRef { name, num } => format!("{name}[{num}]"),
             Token::Int(n)     => n.to_string(),
             Token::Float(f)   => format!("{f}"),
             Token::Ident(s)   => s.clone(),
@@ -175,6 +187,9 @@ fn lex_word(word: &str, line: usize) -> Result<Token, AqlError> {
         "CALL"                 => return Ok(Token::Call),
         // AQL v2 keywords
         "REPEAT"               => return Ok(Token::Repeat),
+        "IFMEASURED"           => return Ok(Token::IfMeasured),
+        "IFNOTMEASURED"        => return Ok(Token::IfNotMeasured),
+        "THEN"                 => return Ok(Token::Then),
         // Math constants → resolved to Float immediately
         "PI"                   => return Ok(Token::Float(consts::PI)),
         "TAU"                  => return Ok(Token::Float(consts::TAU)),
@@ -207,6 +222,25 @@ fn lex_word(word: &str, line: usize) -> Result<Token, AqlError> {
     // ── Float literal (handles negatives, scientific notation) ────────
     if let Ok(f) = word.parse::<f64>() {
         return Ok(Token::Float(f));
+    }
+
+    // ── Named register reference: ident[int] ─────────────────────────
+    // Pattern: <name>[<num>]  e.g. data[0], ancilla[2]
+    if let Some(bracket) = word.find('[') {
+        let name_part = &word[..bracket];
+        if let Some(rest) = word[bracket + 1..].strip_suffix(']') {
+            let name_valid = !name_part.is_empty()
+                && name_part.chars().next().map_or(false, |c| c.is_ascii_alphabetic() || c == '_')
+                && name_part.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+            if name_valid {
+                if let Ok(num) = rest.parse::<usize>() {
+                    return Ok(Token::RegRef {
+                        name: name_part.to_ascii_lowercase(),
+                        num,
+                    });
+                }
+            }
+        }
     }
 
     // ── Identifier (label names and future user symbols) ─────────────
@@ -361,5 +395,47 @@ mod tests {
         assert_eq!(stmts[1][0].token, Token::Goto);
         assert_eq!(stmts[2][0].token, Token::If);
         assert_eq!(stmts[3][0].token, Token::IfNot);
+    }
+
+    #[test]
+    fn test_reg_ref_token() {
+        let stmts = tok("H data[0]");
+        assert_eq!(stmts[0][0].token, Token::H);
+        assert_eq!(stmts[0][1].token, Token::RegRef { name: "data".into(), num: 0 });
+    }
+
+    #[test]
+    fn test_reg_ref_large_index() {
+        let stmts = tok("CNOT ancilla[3] data[7]");
+        assert_eq!(stmts[0][1].token, Token::RegRef { name: "ancilla".into(), num: 3 });
+        assert_eq!(stmts[0][2].token, Token::RegRef { name: "data".into(), num: 7 });
+    }
+
+    #[test]
+    fn test_reg_ref_case_insensitive_name() {
+        // Register names are lowercased
+        let stmts = tok("H MyReg[0]");
+        assert_eq!(stmts[0][1].token, Token::RegRef { name: "myreg".into(), num: 0 });
+    }
+
+    #[test]
+    fn test_qreg_named_declaration() {
+        let stmts = tok("QREG data[4]");
+        assert_eq!(stmts[0][0].token, Token::Qreg);
+        assert_eq!(stmts[0][1].token, Token::RegRef { name: "data".into(), num: 4 });
+    }
+
+    #[test]
+    fn test_ifmeasured_tokens() {
+        let stmts = tok("IFMEASURED 0 THEN\nX 1\nEND");
+        assert_eq!(stmts[0][0].token, Token::IfMeasured);
+        assert_eq!(stmts[0][1].token, Token::Int(0));
+        assert_eq!(stmts[0][2].token, Token::Then);
+    }
+
+    #[test]
+    fn test_ifnotmeasured_token() {
+        let stmts = tok("IFNOTMEASURED 1 THEN");
+        assert_eq!(stmts[0][0].token, Token::IfNotMeasured);
     }
 }

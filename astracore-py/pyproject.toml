@@ -1,0 +1,22 @@
+[build-system]
+requires = ["maturin>=1,<2"]
+build-backend = "maturin"
+
+[project]
+name = "astracore"
+version = "0.1.0"
+description = "High-performance hybrid Classical-Quantum Runtime Engine — Python bindings"
+requires-python = ">=3.8"
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Intended Audience :: Science/Research",
+]
+
+[tool.maturin]
+# The Rust source is in astracore-py/src/lib.rs relative to this file
+features = ["pyo3/extension-module"]
+
+[project.optional-dependencies]
+examples = ["numpy"]
