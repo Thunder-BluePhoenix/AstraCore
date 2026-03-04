@@ -561,12 +561,12 @@ AQL is the simplest quantum assembly language in existence:
 
 No other quantum simulator ships a live browser dashboard out of the box.
 
-**v2 dashboard improvements** ⬜ DEFERRED:
-- Circuit diagram visualization (ASCII art → SVG circuit drawer)
-- Step-by-step execution mode (visualize state evolution gate by gate)
-- Multi-run histogram (run circuit N times, show measurement distribution)
-- Export: save current circuit as `.aql` from the browser
-- Share URL: encode circuit in URL query param for instant sharing
+**v2 dashboard improvements** ✅ ALL SHIPPED:
+- ✅ Circuit diagram — SVG drawer (`src/dashboard/circuit_svg.rs`, GET/POST `/api/run` includes `circuit_svg`)
+- ✅ Step-by-step execution — `POST /api/steps` + ⏭ Steps player (slider + ◀▶ arrow keys)
+- ✅ Multi-run histogram — `POST /api/shots` + shot histogram card
+- ✅ Export: 💾 Save .aql from the browser
+- ✅ Share URL: 🔗 base64 URL hash encoding
 
 ---
 

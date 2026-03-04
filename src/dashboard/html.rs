@@ -221,6 +221,7 @@ canvas { max-height: 185px; width: 100% !important; }
         <span style="color:#8b949e;font-size:0.78em">Shots:</span>
         <input type="number" id="shotsInput" class="shots-input" value="1000" min="1" max="100000" title="Number of shots for statistical sampling">
         <button class="btn btn-shots" id="shotsBtn" title="Run N shots and show measurement histogram">🎲 Sample</button>
+        <button class="btn btn-shots" id="stepsBtn" onclick="loadSteps()" title="Walk through gate-by-gate state evolution (use ◀▶ arrow keys)" style="background:#312e81;border-color:#4f46e5;color:#c7d2fe">⏭ Steps</button>
       </div>
 
       <textarea id="editor" spellcheck="false" autocomplete="off">// Bell State  (|00⟩ + |11⟩) / √2
@@ -399,6 +400,22 @@ MEASURE_ALL</code><button class="syn-try-btn" onclick="trySyntaxExample(this)">&
           <div class="card-title" id="shotsCardTitle">SHOT HISTOGRAM</div>
           <canvas id="shotsChart" style="max-height:220px"></canvas>
         </div>
+        <div class="card full-width" id="circuitDiagramCard" style="display:none">
+          <div class="card-title">⬡ CIRCUIT DIAGRAM</div>
+          <div id="circuitDiagram" style="overflow-x:auto;text-align:center;padding:4px 0"></div>
+        </div>
+        <div class="card full-width" id="stepPlayer" style="display:none">
+          <div class="card-title">⏭ STEP-BY-STEP EXECUTION <span id="stepCounter" style="font-weight:normal;color:#64748b;font-size:0.78em;margin-left:8px"></span></div>
+          <div id="stepLabel" style="color:#94a3b8;font-size:0.88em;margin-bottom:10px;min-height:1.2em">—</div>
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+            <button class="btn btn-shots" onclick="prevStep()" style="padding:3px 12px;font-size:0.85em">◀ Prev</button>
+            <input type="range" id="stepSlider" min="0" max="0" value="0"
+                   oninput="goToStep(this.value)"
+                   style="flex:1;accent-color:#818cf8;cursor:pointer">
+            <button class="btn btn-shots" onclick="nextStep()" style="padding:3px 12px;font-size:0.85em">Next ▶</button>
+          </div>
+          <canvas id="stepChart" style="max-height:200px"></canvas>
+        </div>
       </div>
     </div>
   </div>
@@ -499,6 +516,12 @@ editor.addEventListener('keydown', e => {
   } else if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
     e.preventDefault();
     runCircuit();
+  } else if (e.key === 'ArrowLeft' && _stepData) {
+    e.preventDefault();
+    prevStep();
+  } else if (e.key === 'ArrowRight' && _stepData) {
+    e.preventDefault();
+    nextStep();
   }
 });
 
@@ -973,7 +996,63 @@ function renderResults(d) {
     document.getElementById('measContent').innerHTML =
       '<table><tr style="color:#4d5560"><td>Qubit</td><td>Outcome</td><td>Step</td></tr>' + rows + '</table>';
   }
+
+  // Circuit diagram
+  if (d.circuit_svg) {
+    document.getElementById('circuitDiagram').innerHTML = d.circuit_svg;
+    document.getElementById('circuitDiagramCard').style.display = '';
+  }
 }
+
+// ── Step-by-step player ─────────────────────────────────────────────
+var _stepData = null, _stepIdx = 0;
+
+async function loadSteps() {
+  var src = document.getElementById('editor').value.trim();
+  if (!src) return;
+  var btn = document.getElementById('stepsBtn');
+  btn.disabled = true; btn.textContent = '\u2026';
+  var errorMsg = document.getElementById('errorMsg');
+  errorMsg.textContent = '';
+  try {
+    var res = await fetch('/api/steps', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source: src })
+    });
+    var d = await res.json();
+    if (d.error) {
+      errorMsg.textContent = '\u2717 ' + d.error;
+      return;
+    }
+    _stepData = d;
+    document.getElementById('stepSlider').max = d.steps.length - 1;
+    document.getElementById('stepPlayer').style.display = '';
+    goToStep(0);
+  } catch (err) {
+    errorMsg.textContent = '\u2717 ' + err.message;
+  } finally {
+    btn.disabled = false; btn.textContent = '\u23ed Steps';
+  }
+}
+
+function goToStep(idx) {
+  if (!_stepData) return;
+  _stepIdx = Math.max(0, Math.min(parseInt(idx), _stepData.steps.length - 1));
+  var s = _stepData.steps[_stepIdx];
+  var total = _stepData.steps.length;
+  document.getElementById('stepLabel').textContent = s.label;
+  document.getElementById('stepCounter').textContent = '(' + (_stepIdx + 1) + ' / ' + total + ')';
+  document.getElementById('stepSlider').value = _stepIdx;
+  var n = _stepData.n_qubits;
+  var labels = s.probabilities.map(function(_, i) {
+    return '|' + i.toString(2).padStart(n, '0') + '\u27e9';
+  });
+  updateChart('stepChart', labels, s.probabilities, '#818cf8', 1.0);
+}
+
+function prevStep() { if (_stepIdx > 0) goToStep(_stepIdx - 1); }
+function nextStep() { if (_stepData && _stepIdx < _stepData.steps.length - 1) goToStep(_stepIdx + 1); }
 
 // Auto-run on page load (shared URL or default Bell circuit)
 window.addEventListener('DOMContentLoaded', () => setTimeout(runCircuit, 120));

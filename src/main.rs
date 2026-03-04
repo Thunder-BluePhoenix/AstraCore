@@ -337,6 +337,11 @@ fn load_dashboard_data(path: &str) -> DashboardData {
         Ok(s) => s,
         Err(e) => { eprintln!("Cannot read '{}': {}", path, e); std::process::exit(1); }
     };
+    let program = match compiler::parse_source(&source) {
+        Ok(p) => p,
+        Err(e) => { eprintln!("{e}"); std::process::exit(1); }
+    };
+    let circuit_svg = dashboard::circuit_svg::render(&program.instructions, program.num_qubits);
     let analysis = match compiler::analyze_source(&source) {
         Ok(a) => a,
         Err(e) => { eprintln!("{e}"); std::process::exit(1); }
@@ -345,7 +350,7 @@ fn load_dashboard_data(path: &str) -> DashboardData {
         Ok(r) => r,
         Err(e) => { eprintln!("{e}"); std::process::exit(1); }
     };
-    DashboardData { source_path: path.to_string(), analysis, result }
+    DashboardData { source_path: path.to_string(), analysis, result, circuit_svg }
 }
 
 fn cli_dash(path: Option<&str>) {

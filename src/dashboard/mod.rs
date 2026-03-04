@@ -10,6 +10,7 @@
 ///
 /// All three backends consume the same [`DashboardData`] struct, which bundles
 /// the circuit analysis and execution result for a single AQL program.
+pub mod circuit_svg;
 pub mod html;
 pub mod server;
 pub mod tui;
@@ -31,6 +32,8 @@ pub struct DashboardData {
     pub analysis: CircuitAnalysis,
     /// Execution result (probabilities, measurements, timing…).
     pub result: ExecutionResult,
+    /// Pre-rendered SVG circuit diagram (empty string if unavailable).
+    pub circuit_svg: String,
 }
 
 impl DashboardData {

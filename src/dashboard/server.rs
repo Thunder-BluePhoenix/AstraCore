@@ -19,7 +19,13 @@ use axum::{
 };
 
 use crate::compiler;
-use crate::dashboard::{html::render_server_html, DashboardData};
+use crate::core::gates::{
+    apply_cnot, apply_cz, apply_single_qubit_gate, apply_swap, apply_toffoli,
+    hadamard, pauli_x, pauli_y, pauli_z, phase_gate, rx, ry, rz, s_gate, t_gate,
+};
+use crate::core::StateVector;
+use crate::compiler::ir::{Instruction, Program};
+use crate::dashboard::{circuit_svg, html::render_server_html, DashboardData};
 use crate::runtime::run_shots;
 
 // ── Public API ────────────────────────────────────────────────────────────
@@ -45,6 +51,7 @@ async fn async_serve(data: Arc<DashboardData>, port: u16) {
         .route("/api/data",  get(handler_data))
         .route("/api/run",   post(handler_run))
         .route("/api/shots", post(handler_shots))
+        .route("/api/steps", post(handler_steps))
         .with_state(data);
 
     let addr = format!("0.0.0.0:{}", port);
@@ -88,6 +95,13 @@ async fn handler_data(
 async fn handler_run(
     axum::Json(req): axum::Json<RunRequest>,
 ) -> axum::Json<serde_json::Value> {
+    // Parse once to generate the circuit diagram.
+    let program = match compiler::parse_source(&req.source) {
+        Ok(p)  => p,
+        Err(e) => return axum::Json(serde_json::json!({ "error": e.to_string() })),
+    };
+    let svg = circuit_svg::render(&program.instructions, program.num_qubits);
+
     let analysis = match compiler::analyze_source(&req.source) {
         Ok(a)  => a,
         Err(e) => return axum::Json(serde_json::json!({ "error": e.to_string() })),
@@ -100,8 +114,28 @@ async fn handler_run(
         source_path: "<editor>".to_string(),
         analysis,
         result,
+        circuit_svg: svg,
     };
     axum::Json(build_json(&data))
+}
+
+/// `POST /api/steps` — return gate-by-gate state snapshots for step-through animation.
+///
+/// Returns `{ "steps": [{step, label, probabilities}, …], "n_qubits": N }`
+/// or `{ "error": "…" }` on failure. Capped at 100 steps.
+async fn handler_steps(
+    axum::Json(req): axum::Json<RunRequest>,
+) -> axum::Json<serde_json::Value> {
+    let program = match compiler::parse_source(&req.source) {
+        Ok(p)  => p,
+        Err(e) => return axum::Json(serde_json::json!({ "error": e.to_string() })),
+    };
+    let snapshots = execute_steps(&program);
+    let n_qubits = program.num_qubits;
+    axum::Json(serde_json::json!({
+        "steps":    snapshots,
+        "n_qubits": n_qubits,
+    }))
 }
 
 /// `POST /api/shots` — run `{ "source": "<aql>", "shots": N }` and return a
@@ -129,6 +163,163 @@ async fn handler_shots(
         "n_shots":  sr.n_shots,
         "n_qubits": sr.n_qubits,
     }))
+}
+
+// ── Step-by-step execution ────────────────────────────────────────────────
+
+/// A single snapshot of the quantum state after applying one instruction.
+#[derive(serde::Serialize)]
+struct StepSnapshot {
+    step:          usize,
+    label:         String,
+    probabilities: Vec<f64>,
+}
+
+/// Execute `program` instruction-by-instruction, returning a state snapshot
+/// after each gate. Capped at 100 snapshots. Control-flow (GOTO/IF) terminates
+/// the trace with a warning label. CallGate is treated as an opaque step.
+fn execute_steps(program: &Program) -> Vec<StepSnapshot> {
+    let n = program.num_qubits;
+    let mut state = StateVector::new(n);
+    let mut snaps: Vec<StepSnapshot> = Vec::new();
+
+    // Initial ground state snapshot.
+    snaps.push(StepSnapshot {
+        step:          0,
+        label:         "Initial |0\u{22ef}0\u{27e9}".to_string(),
+        probabilities: state_probs(&state),
+    });
+
+    for (idx, instr) in program.instructions.iter().enumerate() {
+        if snaps.len() >= 101 { break; }
+
+        match instr {
+            Instruction::H(q)     => apply_single_qubit_gate(&mut state, &hadamard(),  *q),
+            Instruction::X(q)     => apply_single_qubit_gate(&mut state, &pauli_x(),   *q),
+            Instruction::Y(q)     => apply_single_qubit_gate(&mut state, &pauli_y(),   *q),
+            Instruction::Z(q)     => apply_single_qubit_gate(&mut state, &pauli_z(),   *q),
+            Instruction::S(q)     => apply_single_qubit_gate(&mut state, &s_gate(),    *q),
+            Instruction::T(q)     => apply_single_qubit_gate(&mut state, &t_gate(),    *q),
+            Instruction::Rx { qubit, theta }    => apply_single_qubit_gate(&mut state, &rx(*theta),         *qubit),
+            Instruction::Ry { qubit, theta }    => apply_single_qubit_gate(&mut state, &ry(*theta),         *qubit),
+            Instruction::Rz { qubit, theta }    => apply_single_qubit_gate(&mut state, &rz(*theta),         *qubit),
+            Instruction::Phase { qubit, theta } => apply_single_qubit_gate(&mut state, &phase_gate(*theta), *qubit),
+
+            Instruction::Cnot { control, target } => apply_cnot(&mut state, *control, *target),
+            Instruction::Cz   { control, target } => apply_cz  (&mut state, *control, *target),
+            Instruction::Swap { qubit_a, qubit_b }=> apply_swap(&mut state, *qubit_a, *qubit_b),
+            Instruction::Toffoli { control0, control1, target } => {
+                apply_toffoli(&mut state, *control0, *control1, *target);
+            }
+
+            Instruction::Measure(q) => {
+                state.collapse(*q, rand::random::<f64>());
+            }
+            Instruction::MeasureAll => {
+                for q in 0..n { state.collapse(q, rand::random::<f64>()); }
+            }
+
+            // Invisible / structural
+            Instruction::Barrier | Instruction::Label(_) => continue,
+
+            // Control flow — stop tracing
+            Instruction::Goto { .. }
+            | Instruction::GotoIf { .. }
+            | Instruction::GotoIfNot { .. } => {
+                snaps.push(StepSnapshot {
+                    step:          idx + 1,
+                    label:         "\u{26a0} Control flow \u{2014} remaining steps not shown".to_string(),
+                    probabilities: state_probs(&state),
+                });
+                return snaps;
+            }
+
+            // Opaque custom gate — snapshot but don't expand
+            Instruction::CallGate { name, qubits } => {
+                let qs: Vec<String> = qubits.iter().map(|q| format!("q{q}")).collect();
+                let label = format!("CALL {} {}", name, qs.join(" "));
+                snaps.push(StepSnapshot {
+                    step: idx + 1,
+                    label,
+                    probabilities: state_probs(&state),
+                });
+                continue; // already pushed — don't push again below
+            }
+        }
+
+        snaps.push(StepSnapshot {
+            step:          idx + 1,
+            label:         fmt_instr(instr),
+            probabilities: state_probs(&state),
+        });
+    }
+    snaps
+}
+
+/// Compute probabilities from state vector amplitudes.
+#[inline]
+fn state_probs(state: &StateVector) -> Vec<f64> {
+    state.amplitudes.iter().map(|a| a.norm_sq()).collect()
+}
+
+/// Human-readable label for a single instruction.
+fn fmt_instr(instr: &Instruction) -> String {
+    match instr {
+        Instruction::H(q)     => format!("H q{q}"),
+        Instruction::X(q)     => format!("X q{q}"),
+        Instruction::Y(q)     => format!("Y q{q}"),
+        Instruction::Z(q)     => format!("Z q{q}"),
+        Instruction::S(q)     => format!("S q{q}"),
+        Instruction::T(q)     => format!("T q{q}"),
+        Instruction::Rx { qubit, theta }    => format!("Rx({theta:.3}) q{qubit}"),
+        Instruction::Ry { qubit, theta }    => format!("Ry({theta:.3}) q{qubit}"),
+        Instruction::Rz { qubit, theta }    => format!("Rz({theta:.3}) q{qubit}"),
+        Instruction::Phase { qubit, theta } => format!("Phase({theta:.3}) q{qubit}"),
+        Instruction::Cnot { control, target } => format!("CNOT q{control} \u{2192} q{target}"),
+        Instruction::Cz   { control, target } => format!("CZ q{control} q{target}"),
+        Instruction::Swap { qubit_a, qubit_b} => format!("SWAP q{qubit_a} q{qubit_b}"),
+        Instruction::Toffoli { control0, control1, target } => {
+            format!("Toffoli q{control0} q{control1} \u{2192} q{target}")
+        }
+        Instruction::Measure(q)  => format!("Measure q{q}"),
+        Instruction::MeasureAll  => "Measure All".to_string(),
+        Instruction::CallGate { name, qubits } => {
+            let qs: Vec<String> = qubits.iter().map(|q| format!("q{q}")).collect();
+            format!("CALL {} {}", name, qs.join(" "))
+        }
+        _ => String::new(),
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bell_program() -> Program {
+        compiler::parse_source("QREG 2\nH 0\nCNOT 0 1\nMEASURE_ALL").unwrap()
+    }
+
+    #[test]
+    fn execute_steps_bell_at_least_three() {
+        let prog = bell_program();
+        let snaps = execute_steps(&prog);
+        // Initial + H + CNOT + MeasureAll = at least 4 snapshots
+        assert!(snaps.len() >= 3, "Expected ≥3 snapshots, got {}", snaps.len());
+        assert_eq!(snaps[0].step, 0);
+        assert!(snaps[0].label.contains("Initial"));
+    }
+
+    #[test]
+    fn execute_steps_initial_is_ground_state() {
+        let prog = bell_program();
+        let snaps = execute_steps(&prog);
+        let probs = &snaps[0].probabilities;
+        // 2 qubits → 4 amplitudes; |00⟩ = index 0 should have prob ≈ 1.0
+        assert!(probs[0] > 0.99, "P(|00⟩) should be 1.0 initially, got {}", probs[0]);
+        assert!(probs[1..].iter().all(|&p| p < 1e-10));
+    }
 }
 
 // ── Request / response helpers ────────────────────────────────────────────
@@ -186,5 +377,6 @@ fn build_json(data: &DashboardData) -> serde_json::Value {
         "branch_count":         r.branch_count,
         "steps_executed":       r.steps_executed,
         "measurements":         measurements,
+        "circuit_svg":          data.circuit_svg,
     })
 }
