@@ -15,8 +15,13 @@ classifiers = [
 ]
 
 [tool.maturin]
-# The Rust source is in astracore-py/src/lib.rs relative to this file
 features = ["pyo3/extension-module"]
+# Quick install (dev build):  pip install -e .
+# Release build:               pip install -e . --config-settings="build-args=--release"
+# Or use the bundled scripts:  bash setup.sh --release   /   .\setup.ps1 -Release
 
 [project.optional-dependencies]
 examples = ["numpy"]
+
+[project.scripts]
+# No CLI scripts — import as a library: import astracore as ac

@@ -92,6 +92,10 @@ body {
 .btn-shots { background: #2d1f4e; border-color: #a371f7; color: #a371f7; }
 .btn-shots:hover { background: #3d2a6a; }
 .btn-shots:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn-lang { background: #1a3a2a; border-color: #2d6a4f; color: #74c69d; transition: all 0.15s; }
+.btn-lang:hover { background: #1e4d36; }
+.btn-lang.py-mode { background: #14532d; border-color: #166534; color: #86efac; }
+#langBanner { display:none; font-size:0.74em; color:#86efac; padding:2px 8px; background:#052e16; border:1px solid #166534; border-radius:3px; }
 #editor {
   flex: 1; background: #010409; color: #e6edf3;
   border: 1px solid #30363d; border-radius: 6px;
@@ -220,8 +224,8 @@ canvas { max-height: 185px; width: 100% !important; }
       <div class="shots-row" style="padding: 0 0 4px 0;">
         <span style="color:#8b949e;font-size:0.78em">Shots:</span>
         <input type="number" id="shotsInput" class="shots-input" value="1000" min="1" max="100000" title="Number of shots for statistical sampling">
-        <button class="btn btn-shots" id="shotsBtn" title="Run N shots and show measurement histogram">🎲 Sample</button>
-        <button class="btn btn-shots" id="stepsBtn" onclick="loadSteps()" title="Walk through gate-by-gate state evolution (use ◀▶ arrow keys)" style="background:#312e81;border-color:#4f46e5;color:#c7d2fe">⏭ Steps</button>
+        <button class="btn btn-lang" id="langToggleBtn" onclick="toggleLang()" title="Switch between AQL and Python code view">🐍 Python</button>
+        <span id="langBanner">Python view — click ↩ AQL to switch back</span>
       </div>
 
       <textarea id="editor" spellcheck="false" autocomplete="off">// Bell State  (|00⟩ + |11⟩) / √2
@@ -376,6 +380,7 @@ MEASURE_ALL</code><button class="syn-try-btn" onclick="trySyntaxExample(this)">&
 
     <div id="results" style="display:none">
       <div class="results-grid">
+        <div id="aqlCardsGroup" style="display:contents">
         <div class="card">
           <div class="card-title">CIRCUIT METRICS</div>
           <div id="metricsContent"></div>
@@ -396,6 +401,7 @@ MEASURE_ALL</code><button class="syn-try-btn" onclick="trySyntaxExample(this)">&
           <div class="card-title">MEASUREMENT OUTCOMES</div>
           <div id="measContent"></div>
         </div>
+        </div><!-- /aqlCardsGroup -->
         <div class="card full-width" id="shotsCard" style="display:none">
           <div class="card-title" id="shotsCardTitle">SHOT HISTOGRAM</div>
           <canvas id="shotsChart" style="max-height:220px"></canvas>
@@ -404,17 +410,36 @@ MEASURE_ALL</code><button class="syn-try-btn" onclick="trySyntaxExample(this)">&
           <div class="card-title">⬡ CIRCUIT DIAGRAM</div>
           <div id="circuitDiagram" style="overflow-x:auto;text-align:center;padding:4px 0"></div>
         </div>
+        <div class="card full-width" id="aqlOutputCard" style="display:none">
+          <div class="card-title">⚛ AQL EXECUTION OUTPUT</div>
+          <pre id="aqlOutput" style="margin:0;padding:10px 14px;background:#0a0f1a;border-radius:6px;color:#4ade80;font-size:0.85em;white-space:pre-wrap;word-break:break-all;max-height:260px;overflow-y:auto"></pre>
+        </div>
+        <div class="card full-width" id="pyOutputCard" style="display:none">
+          <div class="card-title">🐍 PYTHON OUTPUT</div>
+          <pre id="pyStdout" style="margin:0 0 6px 0;padding:10px 14px;background:#0a0f1a;border-radius:6px;color:#4ade80;font-size:0.85em;white-space:pre-wrap;word-break:break-all;max-height:320px;overflow-y:auto"></pre>
+          <pre id="pyStderr" style="display:none;margin:0;padding:10px 14px;background:#1a0f0f;border-radius:6px;color:#f87171;font-size:0.85em;white-space:pre-wrap;word-break:break-all;max-height:180px;overflow-y:auto"></pre>
+        </div>
         <div class="card full-width" id="stepPlayer" style="display:none">
-          <div class="card-title">⏭ STEP-BY-STEP EXECUTION <span id="stepCounter" style="font-weight:normal;color:#64748b;font-size:0.78em;margin-left:8px"></span></div>
-          <div id="stepLabel" style="color:#94a3b8;font-size:0.88em;margin-bottom:10px;min-height:1.2em">—</div>
-          <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
-            <button class="btn btn-shots" onclick="prevStep()" style="padding:3px 12px;font-size:0.85em">◀ Prev</button>
-            <input type="range" id="stepSlider" min="0" max="0" value="0"
-                   oninput="goToStep(this.value)"
-                   style="flex:1;accent-color:#818cf8;cursor:pointer">
-            <button class="btn btn-shots" onclick="nextStep()" style="padding:3px 12px;font-size:0.85em">Next ▶</button>
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+            <div class="card-title" style="margin:0">⏭ STEP-BY-STEP EXECUTION <span id="stepCounter" style="font-weight:normal;color:#64748b;font-size:0.78em;margin-left:8px"></span></div>
+            <button class="btn btn-shots" id="showAllStepsBtn" onclick="toggleAllSteps()" style="padding:3px 12px;font-size:0.82em">☰ Show All Steps</button>
           </div>
-          <canvas id="stepChart" style="max-height:200px"></canvas>
+          <!-- Slider view -->
+          <div id="stepSliderView">
+            <div id="stepLabel" style="color:#94a3b8;font-size:0.88em;margin-bottom:10px;min-height:1.2em">—</div>
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+              <button class="btn btn-shots" onclick="prevStep()" style="padding:3px 12px;font-size:0.85em">◀ Prev</button>
+              <input type="range" id="stepSlider" min="0" max="0" value="0"
+                     oninput="goToStep(this.value)"
+                     style="flex:1;accent-color:#818cf8;cursor:pointer">
+              <button class="btn btn-shots" onclick="nextStep()" style="padding:3px 12px;font-size:0.85em">Next ▶</button>
+            </div>
+            <canvas id="stepChart" style="max-height:200px"></canvas>
+          </div>
+          <!-- All steps view -->
+          <div id="allStepsView" style="display:none;overflow-y:auto;max-height:420px">
+            <table id="allStepsTable" style="width:100%;border-collapse:collapse;font-size:0.83em"></table>
+          </div>
         </div>
       </div>
     </div>
@@ -433,7 +458,6 @@ const runBtn    = document.getElementById('runBtn');
 const errorMsg  = document.getElementById('errorMsg');
 const filename  = document.getElementById('filename');
 const fileInput = document.getElementById('fileInput');
-const shotsBtn  = document.getElementById('shotsBtn');
 const shotsInput= document.getElementById('shotsInput');
 
 // ── URL hash sharing ───────────────────────────────────────────────
@@ -516,12 +540,6 @@ editor.addEventListener('keydown', e => {
   } else if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
     e.preventDefault();
     runCircuit();
-  } else if (e.key === 'ArrowLeft' && _stepData) {
-    e.preventDefault();
-    prevStep();
-  } else if (e.key === 'ArrowRight' && _stepData) {
-    e.preventDefault();
-    nextStep();
   }
 });
 
@@ -534,21 +552,40 @@ async function runCircuit() {
   runBtn.disabled = true;
   runBtn.textContent = '\u23f3 Running\u2026';
   errorMsg.textContent = '';
-  // Update URL hash for sharing
+
+  // Python mode — just run via subprocess and show text output
+  if (_editorMode === 'py') {
+    try {
+      const res = await fetch('/api/run-python', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source })
+      });
+      const data = await res.json();
+      if (data.error) { errorMsg.textContent = '\u2717 ' + data.error; }
+      else { renderPythonOutput(data); }
+    } catch (err) { errorMsg.textContent = '\u2717 ' + err.message; }
+    finally { runBtn.disabled = false; runBtn.textContent = '\u25b6 Execute'; }
+    return;
+  }
+
+  // AQL mode — fire /api/run + /api/shots + /api/steps in parallel
   history.replaceState(null, '', '#' + encodeCircuit(source));
+  const shots = parseInt(document.getElementById('shotsInput').value, 10) || 1000;
+  const post = (url, body) => fetch(url, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  }).then(r => r.json());
+
   try {
-    const res = await fetch('/api/run', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ source })
-    });
-    if (!res.ok) { errorMsg.textContent = '\u2717 HTTP ' + res.status; return; }
-    const data = await res.json();
-    if (data.error) {
-      errorMsg.textContent = '\u2717 ' + data.error;
-    } else {
-      renderResults(data);
-    }
+    const [runData, shotsData, stepsData] = await Promise.all([
+      post('/api/run',   { source }),
+      post('/api/shots', { source, shots }),
+      post('/api/steps', { source })
+    ]);
+    if (runData.error) { errorMsg.textContent = '\u2717 ' + runData.error; return; }
+    renderResults(runData);
+    if (!shotsData.error) renderShotsResults(shotsData);
+    if (!stepsData.error) renderStepsResults(stepsData);
   } catch (err) {
     errorMsg.textContent = '\u2717 ' + err.message;
   } finally {
@@ -557,70 +594,68 @@ async function runCircuit() {
   }
 }
 
-// ── Shot sampling ──────────────────────────────────────────────────
-shotsBtn.onclick = runShots;
-async function runShots() {
-  const source = editor.value.trim();
-  if (!source) return;
-  const shots = parseInt(shotsInput.value, 10) || 1000;
-  shotsBtn.disabled = true;
-  shotsBtn.textContent = '\u23f3\u2026';
-  errorMsg.textContent = '';
-  try {
-    const res = await fetch('/api/shots', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ source, shots })
-    });
-    if (!res.ok) { errorMsg.textContent = '\u2717 HTTP ' + res.status; return; }
-    const data = await res.json();
-    if (data.error) {
-      errorMsg.textContent = '\u2717 ' + data.error;
-    } else {
-      renderShotsResults(data);
-    }
-  } catch (err) {
-    errorMsg.textContent = '\u2717 ' + err.message;
-  } finally {
-    shotsBtn.disabled = false;
-    shotsBtn.textContent = '\uD83C\uDFB2 Sample';
-  }
-}
-
 function renderShotsResults(d) {
   var card = document.getElementById('shotsCard');
   card.style.display = 'block';
   document.getElementById('shotsCardTitle').textContent =
-    'SHOT HISTOGRAM — ' + d.n_shots.toLocaleString() + ' shots, ' + d.n_qubits + ' qubits';
+    'SHOT HISTOGRAM \u2014 ' + d.n_shots.toLocaleString() + ' shots, ' + d.n_qubits + ' qubits';
   var entries = Object.entries(d.counts).sort((a, b) => a[0].localeCompare(b[0]));
   var labels = entries.map(e => '|' + e[0] + '\u27e9');
   var vals   = entries.map(e => e[1]);
   if (chartRefs.has('shotsChart')) { chartRefs.get('shotsChart').destroy(); }
   chartRefs.set('shotsChart', new Chart(document.getElementById('shotsChart'), {
     type: 'bar',
-    data: {
-      labels,
-      datasets: [{
-        data: vals,
-        backgroundColor: '#a371f7cc',
-        borderColor: '#a371f7', borderWidth: 1,
-        label: 'count'
-      }]
-    },
+    data: { labels, datasets: [{ data: vals, backgroundColor: '#a371f7cc', borderColor: '#a371f7', borderWidth: 1, label: 'count' }] },
     options: {
       animation: { duration: 280 },
-      plugins: {
-        legend: { display: false },
-        tooltip: { callbacks: {
-          label: ctx => ' ' + ctx.parsed.y + '  (' + (ctx.parsed.y / d.n_shots * 100).toFixed(1) + '%)'
-        }}
-      },
+      plugins: { legend: { display: false }, tooltip: { callbacks: {
+        label: ctx => ' ' + ctx.parsed.y + '  (' + (ctx.parsed.y / d.n_shots * 100).toFixed(1) + '%)'
+      }}},
       scales: {
         x: { grid: { color: '#1c2128' }, ticks: { color: '#8b949e', font: { family: 'Courier New', size: 11 } } },
         y: { grid: { color: '#1c2128' }, ticks: { color: '#8b949e' }, min: 0 }
       }
     }
   }));
+}
+
+function renderStepsResults(d) {
+  _stepData = d;
+  document.getElementById('stepSlider').max = d.steps.length - 1;
+  // Reset to slider view when new data arrives
+  document.getElementById('stepSliderView').style.display = '';
+  document.getElementById('allStepsView').style.display = 'none';
+  document.getElementById('showAllStepsBtn').textContent = '\u2630 Show All Steps';
+  // Build all-steps table (built once, shown on demand)
+  var n = d.n_qubits;
+  var rows = d.steps.map(function(s) {
+    var dominant = s.probabilities.reduce(function(best, p, i) { return p > best.p ? {p:p,i:i} : best; }, {p:-1,i:0});
+    var stateStr = '|' + dominant.i.toString(2).padStart(n,'0') + '\u27e9 ' + (dominant.p*100).toFixed(1) + '%';
+    var isCtrl = s.label.indexOf('\u21aa') === 0 || s.label.indexOf('\u26a0') >= 0;
+    var rowStyle = isCtrl ? 'color:#fbbf24' : '';
+    return '<tr style="border-bottom:1px solid #1e293b;' + rowStyle + '">' +
+      '<td style="padding:4px 8px;color:#475569;min-width:36px">' + s.step + '</td>' +
+      '<td style="padding:4px 8px;flex:1">' + s.label + '</td>' +
+      '<td style="padding:4px 8px;color:#818cf8;font-family:monospace;white-space:nowrap">' + stateStr + '</td>' +
+      '</tr>';
+  }).join('');
+  document.getElementById('allStepsTable').innerHTML =
+    '<tr style="color:#475569;font-size:0.78em;border-bottom:1px solid #334155">' +
+    '<th style="padding:4px 8px;text-align:left">Step</th>' +
+    '<th style="padding:4px 8px;text-align:left">Instruction</th>' +
+    '<th style="padding:4px 8px;text-align:left">Dominant state</th></tr>' + rows;
+  document.getElementById('stepPlayer').style.display = '';
+  goToStep(0);
+}
+
+function toggleAllSteps() {
+  var sliderView = document.getElementById('stepSliderView');
+  var allView    = document.getElementById('allStepsView');
+  var btn        = document.getElementById('showAllStepsBtn');
+  var showing    = allView.style.display !== 'none';
+  sliderView.style.display = showing ? '' : 'none';
+  allView.style.display    = showing ? 'none' : '';
+  btn.textContent = showing ? '\u2630 Show All Steps' : '\u2715 Close All Steps';
 }
 
 // ── Example circuits ───────────────────────────────────────────────
@@ -936,9 +971,50 @@ function updateChart(id, labels, values, color, yMax) {
 }
 
 // ── Render results ─────────────────────────────────────────────────
+function renderPythonOutput(data) {
+  document.getElementById('placeholder').style.display = 'none';
+  document.getElementById('results').style.display = 'block';
+  var stdout = document.getElementById('pyStdout');
+  var stderr = document.getElementById('pyStderr');
+  stdout.textContent = data.stdout || '(no output)';
+  if (data.stderr && data.stderr.trim()) {
+    stderr.textContent = data.stderr;
+    stderr.style.display = 'block';
+  } else {
+    stderr.style.display = 'none';
+  }
+  if (data.exit_code !== 0 && data.exit_code !== undefined) {
+    errorMsg.textContent = '\u2717 Python exited with code ' + data.exit_code;
+  }
+  var card = document.getElementById('pyOutputCard');
+  card.style.display = 'block';
+  card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
 function renderResults(d) {
   document.getElementById('placeholder').style.display = 'none';
   document.getElementById('results').style.display = 'block';
+  // Restore AQL cards, hide Python card
+  document.getElementById('aqlCardsGroup').style.display = 'contents';
+  document.getElementById('pyOutputCard').style.display = 'none';
+  // AQL execution output card
+  var meas = d.measurements && d.measurements.length > 0
+    ? d.measurements.map(function(m) { return 'q' + m.qubit + ' \u2192 ' + m.outcome; }).join('\n')
+    : 'No measurements';
+  var topState = d.significant_states && d.significant_states.length > 0
+    ? d.significant_states[0]
+    : null;
+  var stateStr = topState
+    ? '\nFinal state : |' + topState.state + '\u27e9  (' + (topState.prob * 100).toFixed(1) + '%)'
+    : '';
+  document.getElementById('aqlOutput').textContent =
+    'Qubits       : ' + d.num_qubits + '\n' +
+    'Gates applied: ' + d.exec_gate_count + '\n' +
+    'Circuit depth: ' + d.circuit_depth + '\n' +
+    'Measurements : ' + d.measure_count + '\n' +
+    stateStr + '\n\n' +
+    meas;
+  document.getElementById('aqlOutputCard').style.display = 'block';
 
   var cf = d.has_control_flow
     ? '<span class="badge-yes">yes</span>'
@@ -1004,37 +1080,44 @@ function renderResults(d) {
   }
 }
 
+// ── AQL ↔ Python toggle ────────────────────────────────────────────
+var _editorMode = 'aql', _savedAql = '';
+
+async function toggleLang() {
+  var btn = document.getElementById('langToggleBtn');
+  var banner = document.getElementById('langBanner');
+  if (_editorMode === 'aql') {
+    var src = editor.value.trim();
+    if (!src) return;
+    btn.disabled = true; btn.textContent = '\u2026';
+    errorMsg.textContent = '';
+    try {
+      var res = await fetch('/api/to-python', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({source: src})
+      });
+      var d = await res.json();
+      if (d.error) { errorMsg.textContent = '\u2717 ' + d.error; return; }
+      _savedAql = editor.value;
+      editor.value = d.python;
+      _editorMode = 'py';
+      btn.textContent = '\u21a9 AQL';
+      btn.classList.add('py-mode');
+      banner.style.display = 'inline';
+    } catch(e) { errorMsg.textContent = '\u2717 ' + e.message; }
+    finally { btn.disabled = false; }
+  } else {
+    editor.value = _savedAql;
+    _editorMode = 'aql';
+    btn.textContent = '\uD83D\uDC0D Python';
+    btn.classList.remove('py-mode');
+    banner.style.display = 'none';
+  }
+}
+
 // ── Step-by-step player ─────────────────────────────────────────────
 var _stepData = null, _stepIdx = 0;
 
-async function loadSteps() {
-  var src = document.getElementById('editor').value.trim();
-  if (!src) return;
-  var btn = document.getElementById('stepsBtn');
-  btn.disabled = true; btn.textContent = '\u2026';
-  var errorMsg = document.getElementById('errorMsg');
-  errorMsg.textContent = '';
-  try {
-    var res = await fetch('/api/steps', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ source: src })
-    });
-    var d = await res.json();
-    if (d.error) {
-      errorMsg.textContent = '\u2717 ' + d.error;
-      return;
-    }
-    _stepData = d;
-    document.getElementById('stepSlider').max = d.steps.length - 1;
-    document.getElementById('stepPlayer').style.display = '';
-    goToStep(0);
-  } catch (err) {
-    errorMsg.textContent = '\u2717 ' + err.message;
-  } finally {
-    btn.disabled = false; btn.textContent = '\u23ed Steps';
-  }
-}
 
 function goToStep(idx) {
   if (!_stepData) return;

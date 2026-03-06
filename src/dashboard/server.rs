@@ -10,6 +10,7 @@
 ///   - Type or paste AQL directly into the code editor
 ///   - Click **▶ Execute** (or press Ctrl+Enter) to run and visualise
 use std::sync::Arc;
+use std::process::Command;
 
 use axum::{
     extract::State,
@@ -51,7 +52,9 @@ async fn async_serve(data: Arc<DashboardData>, port: u16) {
         .route("/api/data",  get(handler_data))
         .route("/api/run",   post(handler_run))
         .route("/api/shots", post(handler_shots))
-        .route("/api/steps", post(handler_steps))
+        .route("/api/steps",     post(handler_steps))
+        .route("/api/to-python",    post(handler_to_python))
+        .route("/api/run-python",   post(handler_run_python))
         .with_state(data);
 
     let addr = format!("0.0.0.0:{}", port);
@@ -222,16 +225,30 @@ fn execute_steps(program: &Program) -> Vec<StepSnapshot> {
             // Invisible / structural
             Instruction::Barrier | Instruction::Label(_) => continue,
 
-            // Control flow — stop tracing
-            Instruction::Goto { .. }
-            | Instruction::GotoIf { .. }
-            | Instruction::GotoIfNot { .. } => {
+            // Control flow — snapshot with a label but keep tracing linearly
+            Instruction::Goto { label } => {
                 snaps.push(StepSnapshot {
-                    step:          idx + 1,
-                    label:         "\u{26a0} Control flow \u{2014} remaining steps not shown".to_string(),
+                    step:  idx + 1,
+                    label: format!("\u{21aa} GOTO {label}  \u{26a0} runtime may jump"),
                     probabilities: state_probs(&state),
                 });
-                return snaps;
+                continue;
+            }
+            Instruction::GotoIf { qubit, label } => {
+                snaps.push(StepSnapshot {
+                    step:  idx + 1,
+                    label: format!("\u{21aa} IF q{qubit} GOTO {label}  \u{26a0} branch depends on measurement"),
+                    probabilities: state_probs(&state),
+                });
+                continue;
+            }
+            Instruction::GotoIfNot { qubit, label } => {
+                snaps.push(StepSnapshot {
+                    step:  idx + 1,
+                    label: format!("\u{21aa} IFNOT q{qubit} GOTO {label}  \u{26a0} branch depends on measurement"),
+                    probabilities: state_probs(&state),
+                });
+                continue;
             }
 
             // Opaque custom gate — snapshot but don't expand
@@ -288,6 +305,135 @@ fn fmt_instr(instr: &Instruction) -> String {
             format!("CALL {} {}", name, qs.join(" "))
         }
         _ => String::new(),
+    }
+}
+
+// ── AQL → Python code generator ────────────────────────────────────────────
+
+/// Convert a parsed AQL [`Program`] to equivalent `astracore` Python API code.
+fn aql_to_python(program: &Program) -> String {
+    let n = program.num_qubits;
+    let mut lines: Vec<String> = Vec::new();
+    lines.push("import astracore as ac".to_string());
+    lines.push(String::new());
+    lines.push(format!("c = ac.Circuit({})", n));
+
+    for instr in &program.instructions {
+        lines.push(instr_to_py(instr));
+    }
+
+    lines.push(String::new());
+    lines.push("result = c.run()".to_string());
+    lines.push(format!("n = {}", n));
+    lines.push("for i, p in enumerate(result.probabilities):".to_string());
+    lines.push("    if p > 1e-6:".to_string());
+    lines.push("        print(f'|{i:0{n}b}\\u27e9: {p:.4f}')".to_string());
+
+    lines.join("\n")
+}
+
+fn instr_to_py(instr: &Instruction) -> String {
+    match instr {
+        Instruction::H(q)     => format!("c.h({})",  q),
+        Instruction::X(q)     => format!("c.x({})",  q),
+        Instruction::Y(q)     => format!("c.y({})",  q),
+        Instruction::Z(q)     => format!("c.z({})",  q),
+        Instruction::S(q)     => format!("c.s({})",  q),
+        Instruction::T(q)     => format!("c.t({})",  q),
+        Instruction::Rx    { qubit, theta } => format!("c.rx({}, {:.6})",    qubit, theta),
+        Instruction::Ry    { qubit, theta } => format!("c.ry({}, {:.6})",    qubit, theta),
+        Instruction::Rz    { qubit, theta } => format!("c.rz({}, {:.6})",    qubit, theta),
+        Instruction::Phase { qubit, theta } => format!("c.phase({}, {:.6})", qubit, theta),
+        Instruction::Cnot { control, target }  => format!("c.cnot({}, {})", control, target),
+        Instruction::Cz   { control, target }  => format!("c.cz({}, {})",   control, target),
+        Instruction::Swap { qubit_a, qubit_b } => format!("c.swap({}, {})", qubit_a, qubit_b),
+        Instruction::Toffoli { control0, control1, target } =>
+            format!("c.toffoli({}, {}, {})", control0, control1, target),
+        Instruction::Measure(q) => format!("c.measure({})", q),
+        Instruction::MeasureAll  => "c.measure_all()".to_string(),
+        Instruction::Barrier     => "c.barrier()".to_string(),
+        Instruction::Label(l)    => format!("# label: {}", l),
+        Instruction::Goto { label }          => format!("# goto {}", label),
+        Instruction::GotoIf    { qubit, label } => format!("# if q{} goto {}", qubit, label),
+        Instruction::GotoIfNot { qubit, label } => format!("# if not q{} goto {}", qubit, label),
+        Instruction::CallGate { name, qubits } => {
+            let qs = qubits.iter().map(|q| q.to_string()).collect::<Vec<_>>().join(", ");
+            format!("c.call(\"{}\", [{}])", name, qs)
+        }
+    }
+}
+
+/// `POST /api/to-python` — convert AQL source to equivalent Python API code.
+async fn handler_to_python(
+    axum::Json(req): axum::Json<RunRequest>,
+) -> axum::Json<serde_json::Value> {
+    match compiler::parse_source(&req.source) {
+        Ok(program) => {
+            let python = aql_to_python(&program);
+            axum::Json(serde_json::json!({ "python": python }))
+        }
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+// ── Python executor ───────────────────────────────────────────────────────────
+
+/// Find a suitable Python interpreter: prefer the local .venv, fall back to PATH.
+fn find_python() -> String {
+    // Look for astracore-py/.venv relative to the executable or CWD
+    let candidates: &[&str] = &[
+        "astracore-py/.venv/Scripts/python.exe", // Windows venv
+        "astracore-py/.venv/bin/python",          // Unix venv
+        "python",
+        "python3",
+    ];
+    for c in candidates {
+        if std::path::Path::new(c).exists() {
+            return c.to_string();
+        }
+        // Also check relative to CWD
+        if let Ok(cwd) = std::env::current_dir() {
+            let full = cwd.join(c);
+            if full.exists() {
+                return full.to_string_lossy().into_owned();
+            }
+        }
+    }
+    "python".to_string() // last resort
+}
+
+async fn handler_run_python(
+    axum::Json(req): axum::Json<RunRequest>,
+) -> axum::Json<serde_json::Value> {
+    // Write source to a temp file to avoid shell-escaping issues
+    let mut tmp_path = std::env::temp_dir();
+    tmp_path.push(format!("astracore_run_{}.py", std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0)));
+
+    if let Err(e) = std::fs::write(&tmp_path, &req.source) {
+        return axum::Json(serde_json::json!({ "error": format!("Failed to write temp file: {e}") }));
+    }
+
+    let python = find_python();
+    let result = Command::new(&python).arg(&tmp_path).output();
+    let _ = std::fs::remove_file(&tmp_path);
+
+    match result {
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+            let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+            let exit_code = output.status.code().unwrap_or(-1);
+            axum::Json(serde_json::json!({
+                "stdout": stdout,
+                "stderr": stderr,
+                "exit_code": exit_code
+            }))
+        }
+        Err(e) => axum::Json(serde_json::json!({
+            "error": format!("Could not launch Python interpreter '{}': {}", python, e)
+        })),
     }
 }
 

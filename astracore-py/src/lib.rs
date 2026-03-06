@@ -597,7 +597,7 @@ fn build_dashboard_data(source: &str, label: &str) -> Result<DashboardData, AqlE
     let program = parse_source(source)?;
     let analysis = analyze(&program);
     let result   = execute(&program)?;
-    Ok(DashboardData { source_path: label.to_string(), analysis, result })
+    Ok(DashboardData { source_path: label.to_string(), analysis, result, circuit_svg: String::new() })
 }
 
 // ── Module-level free functions ───────────────────────────────────────────────
