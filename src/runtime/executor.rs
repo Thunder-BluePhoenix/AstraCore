@@ -41,8 +41,13 @@ pub struct ExecutionResult {
     pub measurements: Vec<MeasurementRecord>,
     /// Probability snapshot taken before the first measurement (if any).
     pub pre_measurement_probs: Option<Vec<f64>>,
+    /// Full amplitude snapshot (re, im) taken just before the first measurement.
+    /// This shows the superposition state — more interesting than the collapsed final state.
+    pub pre_measurement_amplitudes: Option<Vec<(f64, f64)>>,
     /// Final probability distribution (post-collapse if measured).
     pub final_probabilities: Vec<f64>,
+    /// Final amplitudes as (re, im) pairs — same length as final_probabilities.
+    pub final_amplitudes: Vec<(f64, f64)>,
     /// Total gate operations applied.
     pub gate_count: usize,
     /// Number of conditional branches taken (GotoIf/GotoIfNot that jumped).
@@ -109,6 +114,7 @@ pub fn execute(program: &Program) -> Result<ExecutionResult, AqlError> {
     let mut classical = vec![None::<bool>; program.num_qubits]; // per-qubit register file
     let mut measurements: Vec<MeasurementRecord> = Vec::new();
     let mut pre_measurement_probs: Option<Vec<f64>> = None;
+    let mut pre_measurement_amplitudes: Option<Vec<(f64, f64)>> = None;
     let mut gate_count    = 0usize;
     let mut branch_count  = 0usize;
     let mut steps_executed = 0usize;
@@ -131,6 +137,9 @@ pub fn execute(program: &Program) -> Result<ExecutionResult, AqlError> {
         // Snapshot state before first measurement
         if instr.is_measurement() && first_measure {
             pre_measurement_probs = Some(sim.probabilities());
+            pre_measurement_amplitudes = Some(
+                sim.state.amplitudes.iter().map(|a| (a.re, a.im)).collect()
+            );
             first_measure = false;
         }
 
@@ -234,11 +243,16 @@ pub fn execute(program: &Program) -> Result<ExecutionResult, AqlError> {
         pc += 1;
     }
 
+    let final_amplitudes = sim.state.amplitudes.iter()
+        .map(|a| (a.re, a.im))
+        .collect();
     Ok(ExecutionResult {
         num_qubits: program.num_qubits,
         measurements,
         pre_measurement_probs,
+        pre_measurement_amplitudes,
         final_probabilities: sim.probabilities(),
+        final_amplitudes,
         gate_count,
         branch_count,
         steps_executed,

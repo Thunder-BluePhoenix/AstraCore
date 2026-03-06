@@ -375,12 +375,22 @@ pub fn execute_sparse(program: &Program) -> Result<ExecutionResult, AqlError> {
     }
 
     let final_probabilities = state.probabilities();
+    let n_states = 1usize << program.num_qubits.min(6);
+    let final_amplitudes = (0..n_states)
+        .map(|i| {
+            let a = state.amplitudes.get(&(i as u64)).copied()
+                .unwrap_or(crate::core::Complex { re: 0.0, im: 0.0 });
+            (a.re, a.im)
+        })
+        .collect();
 
     Ok(ExecutionResult {
         num_qubits: program.num_qubits,
         measurements,
         pre_measurement_probs,
+        pre_measurement_amplitudes: None,
         final_probabilities,
+        final_amplitudes,
         gate_count,
         branch_count,
         steps_executed,

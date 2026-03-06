@@ -613,7 +613,9 @@ pub fn execute_mps(program: &Program, bond_dim: usize) -> Result<ExecutionResult
         num_qubits: n,
         measurements,
         pre_measurement_probs: pre_probs,
+        pre_measurement_amplitudes: None,
         final_probabilities,
+        final_amplitudes: vec![], // MPS: amplitudes not fully contracted
         gate_count,
         branch_count,
         steps_executed: steps,

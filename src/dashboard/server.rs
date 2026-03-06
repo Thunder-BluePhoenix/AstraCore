@@ -505,6 +505,21 @@ fn build_json(data: &DashboardData) -> serde_json::Value {
         .map(|(label, p)| serde_json::json!({ "state": label, "prob": p }))
         .collect();
 
+    // Full amplitude table — prefer pre-measurement (shows superposition), fall back to final
+    let n = a.num_qubits;
+    let amp_src: &[(f64, f64)] = r.pre_measurement_amplitudes.as_deref()
+        .unwrap_or(&r.final_amplitudes);
+    let amp_limit = amp_src.len().min(64);
+    let amplitudes: Vec<serde_json::Value> = amp_src[..amp_limit].iter()
+        .enumerate()
+        .map(|(i, (re, im))| {
+            let prob  = re * re + im * im;
+            let phase = im.atan2(*re).to_degrees();
+            let label = format!("|{:0>width$b}⟩", i, width = n);
+            serde_json::json!({ "state": label, "re": re, "im": im, "prob": prob, "phase": phase })
+        })
+        .collect();
+
     serde_json::json!({
         "source_path":          data.source_path,
         "num_qubits":           a.num_qubits,
@@ -524,5 +539,6 @@ fn build_json(data: &DashboardData) -> serde_json::Value {
         "steps_executed":       r.steps_executed,
         "measurements":         measurements,
         "circuit_svg":          data.circuit_svg,
+        "amplitudes":           amplitudes,
     })
 }

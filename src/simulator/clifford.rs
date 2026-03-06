@@ -350,7 +350,9 @@ pub fn execute_clifford(program: &Program) -> Result<ExecutionResult, AqlError> 
         num_qubits: n,
         measurements,
         pre_measurement_probs: None,
+        pre_measurement_amplitudes: None,
         final_probabilities: vec![], // Clifford backend: no full amplitude vector
+        final_amplitudes:    vec![],
         gate_count,
         branch_count,
         steps_executed: steps,

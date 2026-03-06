@@ -253,11 +253,14 @@ pub fn execute_with_plugins(
         pc += 1;
     }
 
+    let final_amplitudes = state.amplitudes.iter().map(|a| (a.re, a.im)).collect();
     Ok(ExecutionResult {
         num_qubits: program.num_qubits,
         measurements,
         pre_measurement_probs,
+        pre_measurement_amplitudes: None,
         final_probabilities: state.amplitudes.iter().map(|a| a.norm_sq()).collect(),
+        final_amplitudes,
         gate_count,
         branch_count,
         steps_executed,

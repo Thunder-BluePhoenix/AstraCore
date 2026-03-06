@@ -35,24 +35,44 @@ body {
 }
 /* ── Header ── */
 .header {
-  padding: 10px 18px; border-bottom: 1px solid #30363d;
-  display: flex; align-items: center; gap: 14px; flex-shrink: 0;
+  padding: 5px 14px; border-bottom: 1px solid #21262d;
+  display: flex; align-items: center; gap: 10px; flex-shrink: 0; min-height: 34px;
 }
-.header-title { font-size: 1.25em; font-weight: bold; color: #58a6ff; }
-.header-sub   { color: #8b949e; font-size: 0.82em; flex: 1; }
-.header-api   { color: #3d4349; font-size: 0.75em; }
+.header-title { font-size: 1.05em; font-weight: bold; color: #58a6ff; white-space: nowrap; }
+.header-sub   { color: #4d5560; font-size: 0.76em; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.header-api   { display: none; }
 /* ── Two-panel layout ── */
 .app { display: flex; flex: 1; overflow: hidden; }
 /* ── Left panel ── */
 .editor-panel {
-  width: 40%; min-width: 260px; max-width: 520px;
-  border-right: 1px solid #30363d;
+  width: 36%; min-width: 240px; max-width: 480px;
   display: flex; flex-direction: column; flex-shrink: 0;
+  transition: width 0.22s ease, min-width 0.22s ease, opacity 0.18s ease;
+  overflow: hidden;
 }
+.editor-panel.collapsed {
+  width: 0 !important; min-width: 0 !important; opacity: 0; pointer-events: none;
+}
+/* Panel divider strip — always visible, contains the toggle */
+.panel-divider {
+  width: 14px; flex-shrink: 0;
+  background: #161b22; border-left: 1px solid #30363d; border-right: 1px solid #30363d;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; transition: background 0.15s; position: relative;
+}
+.panel-divider:hover { background: #1e2d3d; }
+#collapseBtn {
+  background: #1e2d3d; border: 1px solid #30363d; border-radius: 3px;
+  color: #58a6ff; cursor: pointer; font-size: 0.62em;
+  width: 14px; height: 44px; padding: 0;
+  display: flex; align-items: center; justify-content: center;
+  transition: background 0.15s; font-family: monospace;
+}
+#collapseBtn:hover { background: #243a5e; color: #79c0ff; }
 /* ── Tabs ── */
-.tabs { display: flex; border-bottom: 1px solid #30363d; flex-shrink: 0; }
+.tabs { display: flex; border-bottom: 1px solid #21262d; flex-shrink: 0; }
 .tab {
-  padding: 8px 16px; cursor: pointer; font-size: 0.8em;
+  padding: 5px 13px; cursor: pointer; font-size: 0.78em;
   border-bottom: 2px solid transparent; color: #8b949e;
   transition: color 0.15s;
 }
@@ -60,13 +80,13 @@ body {
 .tab:hover:not(.active) { color: #e6edf3; }
 /* ── Editor view ── */
 #editorView {
-  display: flex; flex-direction: column; flex: 1; gap: 8px;
-  padding: 10px; overflow: hidden;
+  display: flex; flex-direction: column; flex: 1; gap: 5px;
+  padding: 7px 8px; overflow: hidden;
 }
 .toolbar {
-  display: flex; align-items: center; gap: 6px;
-  background: #161b22; border: 1px solid #30363d; border-radius: 6px;
-  padding: 6px 10px; flex-shrink: 0;
+  display: flex; align-items: center; gap: 5px; flex-wrap: wrap;
+  background: #161b22; border: 1px solid #30363d; border-radius: 5px;
+  padding: 4px 8px; flex-shrink: 0;
 }
 .filename { flex: 1; color: #8b949e; font-size: 0.8em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .kbd-hint { color: #3d4349; font-size: 0.73em; white-space: nowrap; }
@@ -152,7 +172,7 @@ body {
 }
 .syn-try-btn:hover { color: #3fb950; border-color: #3fb950; }
 /* ── Results panel ── */
-.results-panel { flex: 1; overflow-y: auto; padding: 12px; }
+.results-panel { flex: 1; overflow-y: auto; padding: 8px; }
 .placeholder {
   height: 100%; display: flex; align-items: center; justify-content: center;
   flex-direction: column; gap: 10px; color: #3d4349;
@@ -160,18 +180,26 @@ body {
 .placeholder-icon { font-size: 2.5em; }
 .placeholder-text { font-size: 0.9em; }
 /* ── Results grid ── */
-.results-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-.card { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 14px; }
+.results-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; transition: grid-template-columns 0.22s; }
+.results-grid.wide { grid-template-columns: repeat(3, 1fr); }
+.card { background: #161b22; border: 1px solid #21262d; border-radius: 5px; padding: 10px 12px; }
 .full-width { grid-column: 1 / -1; }
+/* Amplitude table */
+.amp-table { width:100%; border-collapse:collapse; font-size:0.8em; }
+.amp-table th { color:#475569; font-weight:normal; padding:3px 6px; border-bottom:1px solid #1e293b; text-align:left; }
+.amp-table td { padding:3px 6px; border-bottom:1px solid #0f172a; font-family:'Courier New',monospace; }
+.amp-bar { display:inline-block; height:8px; border-radius:2px; vertical-align:middle; margin-left:4px; }
+/* Phase badge */
+.phase-badge { display:inline-block; width:10px; height:10px; border-radius:50%; vertical-align:middle; margin-right:4px; }
 .card-title {
-  color: #58a6ff; font-size: 0.73em; letter-spacing: 0.1em;
-  border-bottom: 1px solid #21262d; padding-bottom: 6px; margin-bottom: 10px;
+  color: #58a6ff; font-size: 0.71em; letter-spacing: 0.08em; text-transform: uppercase;
+  border-bottom: 1px solid #1c2128; padding-bottom: 5px; margin-bottom: 8px;
 }
-table { width: 100%; border-collapse: collapse; font-size: 0.83em; }
-td { padding: 4px 5px; border-bottom: 1px solid #1c2128; }
+table { width: 100%; border-collapse: collapse; font-size: 0.82em; }
+td { padding: 3px 4px; border-bottom: 1px solid #1a1f27; }
 td:first-child { color: #8b949e; }
 .val { color: #3fb950; font-weight: bold; }
-canvas { max-height: 185px; width: 100% !important; }
+canvas { max-height: 210px; width: 100% !important; }
 .badge-yes { color: #3fb950; } .badge-no { color: #4d5560; }
 /* ── Share URL toast ── */
 #shareToast {
@@ -201,7 +229,7 @@ canvas { max-height: 185px; width: 100% !important; }
 <div class="app">
 
   <!-- ══ LEFT panel ══════════════════════════════════════════════════════ -->
-  <div class="editor-panel">
+  <div class="editor-panel" id="editorPanel">
 
     <!-- Tab bar -->
     <div class="tabs">
@@ -221,7 +249,7 @@ canvas { max-height: 185px; width: 100% !important; }
         <span class="kbd-hint">Ctrl+↵</span>
         <button class="btn btn-run" id="runBtn">▶ Execute</button>
       </div>
-      <div class="shots-row" style="padding: 0 0 4px 0;">
+      <div class="shots-row" style="padding: 0 0 2px 0;">
         <span style="color:#8b949e;font-size:0.78em">Shots:</span>
         <input type="number" id="shotsInput" class="shots-input" value="1000" min="1" max="100000" title="Number of shots for statistical sampling">
         <button class="btn btn-lang" id="langToggleBtn" onclick="toggleLang()" title="Switch between AQL and Python code view">🐍 Python</button>
@@ -371,8 +399,13 @@ MEASURE_ALL</code><button class="syn-try-btn" onclick="trySyntaxExample(this)">&
 
   </div><!-- /editor-panel -->
 
+  <!-- Panel divider + collapse toggle -->
+  <div class="panel-divider" onclick="toggleEditor()" title="Toggle editor panel">
+    <button id="collapseBtn">◀</button>
+  </div>
+
   <!-- ══ RIGHT: Results ══════════════════════════════════════════════════ -->
-  <div class="results-panel">
+  <div class="results-panel" id="resultsPanel">
     <div class="placeholder" id="placeholder">
       <div class="placeholder-icon">⚛</div>
       <div class="placeholder-text">Write AQL and click ▶ Execute to visualize</div>
@@ -393,9 +426,17 @@ MEASURE_ALL</code><button class="syn-try-btn" onclick="trySyntaxExample(this)">&
           <div class="card-title">GATE HISTOGRAM</div>
           <canvas id="gateChart"></canvas>
         </div>
-        <div class="card">
+        <div class="card" id="qubitCard">
           <div class="card-title">QUBIT UTILIZATION</div>
           <canvas id="qubitChart"></canvas>
+        </div>
+        <div class="card" id="stateVectorCard" style="display:none">
+          <div class="card-title">𝜓 STATE VECTOR <span id="svCaption" style="font-weight:normal;color:#475569;font-size:0.85em;margin-left:6px"></span></div>
+          <div id="stateVectorContent" style="overflow-y:auto;max-height:200px"></div>
+        </div>
+        <div class="card" id="phaseCard" style="display:none">
+          <div class="card-title">∠ PHASE DISTRIBUTION</div>
+          <canvas id="phaseChart"></canvas>
         </div>
         <div class="card full-width">
           <div class="card-title">MEASUREMENT OUTCOMES</div>
@@ -457,6 +498,22 @@ const editor    = document.getElementById('editor');
 const runBtn    = document.getElementById('runBtn');
 const errorMsg  = document.getElementById('errorMsg');
 const filename  = document.getElementById('filename');
+
+// ── Collapsible editor ─────────────────────────────────────────────
+var _editorCollapsed = false;
+function toggleEditor() {
+  var panel = document.getElementById('editorPanel');
+  var btn   = document.getElementById('collapseBtn');
+  var grid  = document.querySelector('.results-grid');
+  _editorCollapsed = !_editorCollapsed;
+  panel.classList.toggle('collapsed', _editorCollapsed);
+  btn.textContent = _editorCollapsed ? '▶' : '◀';
+  if (grid) grid.classList.toggle('wide', _editorCollapsed);
+  var svCard = document.getElementById('stateVectorCard');
+  var svVisible = svCard && svCard.style.display !== 'none';
+  setQubitCardSpan(svVisible);
+  setTimeout(function() { chartRefs.forEach(function(c) { c.resize(); }); }, 240);
+}
 const fileInput = document.getElementById('fileInput');
 const shotsInput= document.getElementById('shotsInput');
 
@@ -991,12 +1048,23 @@ function renderPythonOutput(data) {
   card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
+function setQubitCardSpan(svVisible) {
+  // In wide (3-col) mode: if STATE VECTOR is hidden, qubit card spans 2 cols to fill the row
+  var qc = document.getElementById('qubitCard');
+  if (!qc) return;
+  var wide = document.querySelector('.results-grid.wide') !== null;
+  qc.style.gridColumn = (wide && !svVisible) ? 'span 2' : '';
+}
+
 function renderResults(d) {
   document.getElementById('placeholder').style.display = 'none';
   document.getElementById('results').style.display = 'block';
   // Restore AQL cards, hide Python card
   document.getElementById('aqlCardsGroup').style.display = 'contents';
   document.getElementById('pyOutputCard').style.display = 'none';
+  document.getElementById('stateVectorCard').style.display = 'none';
+  document.getElementById('phaseCard').style.display = 'none';
+  setQubitCardSpan(false);
   // AQL execution output card
   var meas = d.measurements && d.measurements.length > 0
     ? d.measurements.map(function(m) { return 'q' + m.qubit + ' \u2192 ' + m.outcome; }).join('\n')
@@ -1077,6 +1145,73 @@ function renderResults(d) {
   if (d.circuit_svg) {
     document.getElementById('circuitDiagram').innerHTML = d.circuit_svg;
     document.getElementById('circuitDiagramCard').style.display = '';
+  }
+
+  // State vector amplitude table
+  if (d.amplitudes && d.amplitudes.length > 0) {
+    var nonZero = d.amplitudes.filter(function(a) { return a.prob > 1e-9; });
+    document.getElementById('svCaption').textContent =
+      nonZero.length + ' non-zero / ' + d.amplitudes.length + ' states';
+    var maxProb = Math.max.apply(null, d.amplitudes.map(function(a) { return a.prob; }));
+    var rows = nonZero.map(function(a) {
+      var barW  = maxProb > 0 ? Math.round(a.prob / maxProb * 60) : 0;
+      var hue   = Math.round(((a.phase + 360) % 360) / 360 * 120 + 180); // blue→green based on phase
+      var reStr = (a.re >= 0 ? ' ' : '') + a.re.toFixed(4);
+      var imStr = (a.im >= 0 ? '+' : '') + a.im.toFixed(4) + 'i';
+      var pStr  = (a.prob * 100).toFixed(2) + '%';
+      return '<tr>' +
+        '<td style="color:#818cf8;white-space:nowrap">' + a.state + '</td>' +
+        '<td style="color:#94a3b8;white-space:nowrap">' + reStr + ' ' + imStr + '</td>' +
+        '<td style="color:#3fb950">' + pStr +
+          '<span class="amp-bar" style="width:' + barW + 'px;background:hsl(' + hue + ',70%,45%)"></span>' +
+        '</td>' +
+        '<td style="color:#f59e0b">' + a.phase.toFixed(1) + '\u00b0</td>' +
+        '</tr>';
+    }).join('');
+    document.getElementById('stateVectorContent').innerHTML =
+      '<table class="amp-table"><thead><tr>' +
+      '<th>State</th><th>Amplitude</th><th>Prob</th><th>Phase</th>' +
+      '</tr></thead><tbody>' + rows + '</tbody></table>';
+    // Show state vector card FIRST so canvas has dimensions
+    document.getElementById('stateVectorCard').style.display = '';
+    document.getElementById('phaseCard').style.display = '';
+    setQubitCardSpan(true);
+
+    // Phase distribution chart (show card first, then init chart)
+    var phaseLabels = nonZero.map(function(a) { return a.state; });
+    var phaseVals   = nonZero.map(function(a) { return a.phase; });
+    var phaseColors = nonZero.map(function(a) {
+      var h = Math.round(((a.phase + 360) % 360) / 360 * 300);
+      return 'hsl(' + h + ',75%,55%)';
+    });
+    // Auto-scale Y axis to actual data range with 20° margin, clamped to [-180, 180]
+    var rawMin = Math.min.apply(null, phaseVals);
+    var rawMax = Math.max.apply(null, phaseVals);
+    var pMin = Math.max(-180, rawMin - 20);
+    var pMax = Math.min(180,  rawMax + 20);
+    if (pMin === pMax) { pMin -= 20; pMax += 20; } // degenerate: all same phase
+    if (chartRefs.has('phaseChart')) { chartRefs.get('phaseChart').destroy(); }
+    chartRefs.set('phaseChart', new Chart(document.getElementById('phaseChart'), {
+      type: 'bar',
+      data: {
+        labels: phaseLabels,
+        datasets: [{ data: phaseVals, backgroundColor: phaseColors, borderColor: phaseColors, borderWidth: 1, label: 'phase (\u00b0)' }]
+      },
+      options: {
+        animation: { duration: 240 },
+        plugins: { legend: { display: false }, tooltip: { callbacks: {
+          label: function(ctx) { return ' ' + ctx.parsed.y.toFixed(2) + '\u00b0'; }
+        }}},
+        scales: {
+          x: { grid: { color: '#1a1f27' }, ticks: { color: '#8b949e', font: { family: 'Courier New', size: 10 } } },
+          y: { grid: { color: '#1a1f27' }, ticks: { color: '#8b949e' }, min: pMin, max: pMax,
+               title: { display: true, text: 'phase (\u00b0)', color: '#475569', font: { size: 10 } } }
+        }
+      }
+    }));
+  } else {
+    document.getElementById('stateVectorCard').style.display = 'none';
+    document.getElementById('phaseCard').style.display = 'none';
   }
 }
 
