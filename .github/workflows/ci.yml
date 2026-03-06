@@ -57,11 +57,13 @@ jobs:
           python-version: '3.11'
 
       - name: Install maturin + test deps
-        run: pip install maturin pytest numpy
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install --upgrade pip maturin pytest numpy
 
       - name: Build Python extension
         working-directory: astracore-py
-        run: maturin develop --release
+        run: ../.venv/bin/maturin develop --release
 
       - name: Run Python tests
-        run: pytest tests/test_astracore.py -v
+        run: .venv/bin/pytest tests/test_astracore.py -v
