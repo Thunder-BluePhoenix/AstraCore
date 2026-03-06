@@ -519,7 +519,7 @@ impl Circuit {
             let exec = _run_with_plugins(&full_source, &reg).map_err(aql_err)?;
             return Ok(Py::new(py, SimResult {
                 num_qubits:    exec.num_qubits,
-                probabilities: exec.final_probabilities,
+                probabilities: exec.pre_measurement_probs.unwrap_or(exec.final_probabilities),
                 measurements:  exec.measurements.iter().map(|m| (m.qubit, m.outcome)).collect(),
             })?.into_py(py));
         }
@@ -533,7 +533,7 @@ impl Circuit {
         };
         Ok(Py::new(py, SimResult {
             num_qubits:    exec.num_qubits,
-            probabilities: exec.final_probabilities,
+            probabilities: exec.pre_measurement_probs.unwrap_or(exec.final_probabilities),
             measurements:  exec.measurements.iter().map(|m| (m.qubit, m.outcome)).collect(),
         })?.into_py(py))
     }
@@ -639,7 +639,7 @@ fn run_aql(
         let exec = _run_with_plugins(&full_source, &reg).map_err(aql_err)?;
         return Ok(Py::new(py, SimResult {
             num_qubits:    exec.num_qubits,
-            probabilities: exec.final_probabilities,
+            probabilities: exec.pre_measurement_probs.unwrap_or(exec.final_probabilities),
             measurements:  exec.measurements.iter().map(|m| (m.qubit, m.outcome)).collect(),
         })?.into_py(py));
     }
@@ -653,7 +653,7 @@ fn run_aql(
     };
     Ok(Py::new(py, SimResult {
         num_qubits:    exec.num_qubits,
-        probabilities: exec.final_probabilities,
+        probabilities: exec.pre_measurement_probs.unwrap_or(exec.final_probabilities),
         measurements:  exec.measurements.iter().map(|m| (m.qubit, m.outcome)).collect(),
     })?.into_py(py))
 }
@@ -702,7 +702,7 @@ fn run_qasm(py: Python<'_>, source: &str) -> PyResult<PyObject> {
     let exec = _run_qasm(source).map_err(aql_err)?;
     let result = SimResult {
         num_qubits:    exec.num_qubits,
-        probabilities: exec.final_probabilities,
+        probabilities: exec.pre_measurement_probs.unwrap_or(exec.final_probabilities),
         measurements:  exec.measurements.iter()
                            .map(|m| (m.qubit, m.outcome))
                            .collect(),

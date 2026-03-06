@@ -240,7 +240,7 @@ def test_analyze_aql_returns_circuit_analysis():
     a = analyze_aql("QREG 2\nH 0\nCNOT 0 1\nMEASURE_ALL")
     assert isinstance(a, CircuitAnalysis)
     assert a.num_qubits == 2
-    assert a.gate_count == 3      # H + CNOT + MEASURE_ALL
+    assert a.gate_count == 2      # H + CNOT (measurements tracked separately in measure_count)
     assert a.circuit_depth >= 2
     assert a.two_qubit_gate_count == 1
     assert a.is_clifford is True
