@@ -369,6 +369,12 @@ pub fn execute_sparse(program: &Program) -> Result<ExecutionResult, AqlError> {
                     continue;
                 }
             }
+            Instruction::MeasureInto { .. } | Instruction::GotoIfCreg { .. }
+            | Instruction::GotoIfNotCreg { .. } => {
+                return Err(AqlError::Runtime {
+                    msg: "CREG instructions not supported in sparse backend; use --backend statevector".to_string(),
+                });
+            }
         }
 
         pc += 1;

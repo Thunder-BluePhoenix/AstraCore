@@ -127,6 +127,13 @@ fn emit_instruction(out: &mut String, instr: &Instruction, _n: usize) {
         Instruction::GotoIfNot { qubit, label } =>
             out.push_str(&format!("// IFNOT {qubit} GOTO {label} (classical control flow)\n")),
 
+        Instruction::MeasureInto { qubit, creg, creg_bit } =>
+            out.push_str(&format!("measure q[{qubit}] -> {creg}[{creg_bit}];\n")),
+        Instruction::GotoIfCreg { creg, bit, label } =>
+            out.push_str(&format!("// IF {creg}[{bit}] GOTO {label} (CREG conditional — not expressible in QASM 2.0)\n")),
+        Instruction::GotoIfNotCreg { creg, bit, label } =>
+            out.push_str(&format!("// IFNOT {creg}[{bit}] GOTO {label} (CREG conditional — not expressible in QASM 2.0)\n")),
+
         Instruction::CallGate { name, qubits } => {
             let args: Vec<String> = qubits.iter().map(|q| format!("q[{q}]")).collect();
             out.push_str(&format!("{name} {};\n", args.join(",")));

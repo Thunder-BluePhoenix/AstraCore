@@ -112,6 +112,11 @@ pub fn execute(program: &Program) -> Result<ExecutionResult, AqlError> {
 
     let mut sim       = Simulator::new(program.num_qubits);
     let mut classical = vec![None::<bool>; program.num_qubits]; // per-qubit register file
+    // Named classical registers (from CREG declarations)
+    let mut creg_bits: HashMap<String, Vec<Option<bool>>> = program.creg_defs
+        .iter()
+        .map(|(name, &size)| (name.clone(), vec![None; size]))
+        .collect();
     let mut measurements: Vec<MeasurementRecord> = Vec::new();
     let mut pre_measurement_probs: Option<Vec<f64>> = None;
     let mut pre_measurement_amplitudes: Option<Vec<(f64, f64)>> = None;
@@ -176,6 +181,50 @@ pub fn execute(program: &Program) -> Result<ExecutionResult, AqlError> {
                     let outcome = sim.measure(q);
                     classical[q] = Some(outcome);
                     measurements.push(MeasurementRecord { qubit: q, outcome, step: pc });
+                }
+            }
+
+            // ── CREG: named classical register operations ───────────────
+            Instruction::MeasureInto { qubit, creg, creg_bit } => {
+                let outcome = sim.measure(*qubit);
+                classical[*qubit] = Some(outcome);
+                if let Some(bits) = creg_bits.get_mut(creg.as_str()) {
+                    if *creg_bit < bits.len() {
+                        bits[*creg_bit] = Some(outcome);
+                    }
+                }
+                measurements.push(MeasurementRecord { qubit: *qubit, outcome, step: pc });
+            }
+            Instruction::GotoIfCreg { creg, bit, label } => {
+                let val = creg_bits.get(creg.as_str())
+                    .and_then(|bits| bits.get(*bit))
+                    .and_then(|b| *b)
+                    .ok_or_else(|| AqlError::Runtime {
+                        msg: format!("IF {creg}[{bit}]: bit has not been measured yet"),
+                    })?;
+                if val {
+                    let &target = label_table.get(label.as_str()).ok_or_else(|| {
+                        AqlError::Runtime { msg: format!("undefined label '{label}' at runtime") }
+                    })?;
+                    pc = target;
+                    branch_count += 1;
+                    continue;
+                }
+            }
+            Instruction::GotoIfNotCreg { creg, bit, label } => {
+                let val = creg_bits.get(creg.as_str())
+                    .and_then(|bits| bits.get(*bit))
+                    .and_then(|b| *b)
+                    .ok_or_else(|| AqlError::Runtime {
+                        msg: format!("IFNOT {creg}[{bit}]: bit has not been measured yet"),
+                    })?;
+                if !val {
+                    let &target = label_table.get(label.as_str()).ok_or_else(|| {
+                        AqlError::Runtime { msg: format!("undefined label '{label}' at runtime") }
+                    })?;
+                    pc = target;
+                    branch_count += 1;
+                    continue;
                 }
             }
 
@@ -639,5 +688,51 @@ MEASURE_ALL");
              QREG 2\nCALL bell 0 1\nMEASURE_ALL"
         );
         assert_eq!(r.gate_count, 2, "gate_count should count body instructions");
+    }
+
+    // ── CREG tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_creg_measure_into_stores_bit() {
+        // X puts qubit 0 in |1⟩; MEASURE 0 -> c[0] should store 1
+        let r = run("CREG c[1]\nQREG 1\nX 0\nMEASURE 0 -> c[0]");
+        assert!(r.outcome(0).unwrap(), "qubit 0 should be |1⟩ after X");
+    }
+
+    #[test]
+    fn test_creg_if_branch_taken_when_one() {
+        // X 0 → MEASURE 0 → c[0]=1 → IF c[0] GOTO done → skip X 1
+        let src = "CREG c[1]\nQREG 2\nX 0\nMEASURE 0 -> c[0]\nIF c[0] GOTO done\nX 1\nLABEL done\nMEASURE 1";
+        let r = run(src);
+        // branch was taken → X 1 skipped → qubit 1 stays |0⟩
+        assert!(!r.outcome(1).unwrap(), "qubit 1 should be |0⟩ (branch skipped X 1)");
+    }
+
+    #[test]
+    fn test_creg_if_branch_not_taken_when_zero() {
+        // qubit 0 stays |0⟩ → c[0]=0 → IF c[0] GOTO done → NOT taken → X 1 runs
+        let src = "CREG c[1]\nQREG 2\nMEASURE 0 -> c[0]\nIF c[0] GOTO done\nX 1\nLABEL done\nMEASURE 1";
+        let r = run(src);
+        // branch not taken → X 1 applied → qubit 1 = |1⟩
+        assert!(r.outcome(1).unwrap(), "qubit 1 should be |1⟩ (X 1 was applied)");
+    }
+
+    #[test]
+    fn test_creg_multiple_registers() {
+        // Two independent CREGs c and d
+        let src = "CREG c[1]\nCREG d[1]\nQREG 2\nX 0\nMEASURE 0 -> c[0]\nMEASURE 1 -> d[0]";
+        let r = run(src);
+        assert!(r.outcome(0).unwrap(),  "c[0] should be 1");
+        assert!(!r.outcome(1).unwrap(), "d[0] should be 0");
+    }
+
+    #[test]
+    fn test_creg_unmeasured_error() {
+        // IF c[0] before MEASURE → runtime error: bit not yet measured
+        let prog = crate::compiler::parse_source(
+            "CREG c[1]\nQREG 1\nIF c[0] GOTO done\nLABEL done"
+        ).expect("parse should succeed");
+        let result = execute(&prog);
+        assert!(result.is_err(), "should error on unmeasured CREG bit");
     }
 }

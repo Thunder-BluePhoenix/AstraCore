@@ -25,6 +25,8 @@
 pub mod compiler;
 pub mod core;
 pub mod dashboard;
+#[cfg(feature = "lsp")]
+pub mod lsp;
 pub mod optimizer;
 pub mod plugins;
 pub mod runtime;

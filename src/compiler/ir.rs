@@ -13,7 +13,7 @@ use std::collections::HashMap;
 
 // ── Instruction ───────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Instruction {
     // ── Single-qubit gates ──────────────────────────────────────────────
     H(usize),
@@ -56,6 +56,17 @@ pub enum Instruction {
     /// `qubits` are the *global* qubit indices passed as arguments.
     /// Local qubit `i` in the gate body is mapped to `qubits[i]` at runtime.
     CallGate { name: String, qubits: Vec<usize> },
+
+    // ── AQL v3: Named classical registers ────────────────────────────────
+    /// Measure qubit and store the outcome in a named classical register bit.
+    /// Syntax: `MEASURE <qubit> -> <creg>[<bit>]`
+    MeasureInto { qubit: usize, creg: String, creg_bit: usize },
+    /// Jump to label if named classical register bit is 1.
+    /// Syntax: `IF <creg>[<bit>] GOTO <label>`
+    GotoIfCreg { creg: String, bit: usize, label: String },
+    /// Jump to label if named classical register bit is 0.
+    /// Syntax: `IFNOT <creg>[<bit>] GOTO <label>`
+    GotoIfNotCreg { creg: String, bit: usize, label: String },
 }
 
 impl Instruction {
@@ -83,7 +94,10 @@ impl Instruction {
             Self::Goto { .. }       => "GOTO",
             Self::GotoIf { .. }     => "IF",
             Self::GotoIfNot { .. }  => "IFNOT",
-            Self::CallGate { .. }   => "CALL",
+            Self::CallGate { .. }      => "CALL",
+            Self::MeasureInto { .. }   => "MEASURE",
+            Self::GotoIfCreg { .. }    => "IF",
+            Self::GotoIfNotCreg { .. } => "IFNOT",
         }
     }
 
@@ -99,12 +113,16 @@ impl Instruction {
 
     /// True if this instruction is a measurement.
     pub fn is_measurement(&self) -> bool {
-        matches!(self, Self::Measure(_) | Self::MeasureAll)
+        matches!(self, Self::Measure(_) | Self::MeasureAll | Self::MeasureInto { .. })
     }
 
     /// True if this instruction is a control-flow directive.
     pub fn is_control_flow(&self) -> bool {
-        matches!(self, Self::Label(_) | Self::Goto { .. } | Self::GotoIf { .. } | Self::GotoIfNot { .. })
+        matches!(self,
+            Self::Label(_) | Self::Goto { .. }
+            | Self::GotoIf { .. } | Self::GotoIfNot { .. }
+            | Self::GotoIfCreg { .. } | Self::GotoIfNotCreg { .. }
+        )
     }
 
     /// True if the program contains any `CallGate` instructions.
@@ -126,6 +144,8 @@ impl Instruction {
             Self::Toffoli { control0, control1, target }            => vec![*control0, *control1, *target],
             Self::GotoIf { qubit, .. } | Self::GotoIfNot { qubit, .. } => vec![*qubit],
             Self::CallGate { qubits, .. }                               => qubits.clone(),
+            Self::MeasureInto { qubit, .. }                             => vec![*qubit],
+            Self::GotoIfCreg { .. } | Self::GotoIfNotCreg { .. }        => vec![],
             Self::MeasureAll | Self::Barrier
             | Self::Label(_) | Self::Goto { .. }                    => vec![],
         }
@@ -165,6 +185,9 @@ impl std::fmt::Display for Instruction {
                 let args: Vec<String> = qubits.iter().map(|q| q.to_string()).collect();
                 write!(f, "CALL {name} {}", args.join(" "))
             }
+            Self::MeasureInto { qubit, creg, creg_bit }  => write!(f, "MEASURE {qubit} -> {creg}[{creg_bit}]"),
+            Self::GotoIfCreg { creg, bit, label }         => write!(f, "IF {creg}[{bit}] GOTO {label}"),
+            Self::GotoIfNotCreg { creg, bit, label }      => write!(f, "IFNOT {creg}[{bit}] GOTO {label}"),
         }
     }
 }
@@ -224,6 +247,8 @@ pub struct Program {
     pub measure_count: usize,
     /// User-defined gate library — keyed by lowercase gate name.
     pub gate_defs: HashMap<String, GateDef>,
+    /// Named classical registers — name → bit count (from CREG declarations).
+    pub creg_defs: HashMap<String, usize>,
 }
 
 impl Program {
@@ -238,9 +263,19 @@ impl Program {
         instructions: Vec<Instruction>,
         gate_defs: HashMap<String, GateDef>,
     ) -> Self {
+        Self::with_cregs(num_qubits, instructions, gate_defs, HashMap::new())
+    }
+
+    /// Construct a program with a user-defined gate library and classical registers.
+    pub(crate) fn with_cregs(
+        num_qubits: usize,
+        instructions: Vec<Instruction>,
+        gate_defs: HashMap<String, GateDef>,
+        creg_defs: HashMap<String, usize>,
+    ) -> Self {
         let gate_count    = instructions.iter().filter(|i| i.is_gate()).count();
         let measure_count = instructions.iter().filter(|i| i.is_measurement()).count();
-        Self { num_qubits, instructions, gate_count, measure_count, gate_defs }
+        Self { num_qubits, instructions, gate_count, measure_count, gate_defs, creg_defs }
     }
 }
 

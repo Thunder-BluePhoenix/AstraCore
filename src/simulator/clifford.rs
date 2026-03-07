@@ -342,6 +342,12 @@ pub fn execute_clifford(program: &Program) -> Result<ExecutionResult, AqlError> 
                     });
                 }
             }
+            Instruction::MeasureInto { .. } | Instruction::GotoIfCreg { .. }
+            | Instruction::GotoIfNotCreg { .. } => {
+                return Err(AqlError::Runtime {
+                    msg: "CREG instructions not supported in Clifford backend; use --backend statevector".to_string(),
+                });
+            }
         }
         pc += 1;
     }

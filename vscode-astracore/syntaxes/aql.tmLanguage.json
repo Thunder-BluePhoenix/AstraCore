@@ -1,0 +1,65 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "AQL",
+  "scopeName": "source.aql",
+  "fileTypes": ["aql"],
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#keywords_control" },
+    { "include": "#keywords_operator" },
+    { "include": "#gates_builtin" },
+    { "include": "#constants_numeric" },
+    { "include": "#numbers" },
+    { "include": "#strings" },
+    { "include": "#identifiers" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.aql",
+          "match": "//.*$"
+        },
+        {
+          "name": "comment.line.number-sign.aql",
+          "match": "#.*$"
+        }
+      ]
+    },
+    "keywords_control": {
+      "name": "keyword.control.aql",
+      "match": "\\b(QREG|CREG|GATE|END|CALL|ORACLE|DIFFUSION|IF|IFNOT|IFMEASURED|IFNOTMEASURED|GOTO|LABEL|BARRIER|REPEAT|INCLUDE|THEN|PATTERN)\\b"
+    },
+    "keywords_operator": {
+      "name": "keyword.operator.aql",
+      "match": "\\b(MEASURE|MEASURE_ALL)\\b"
+    },
+    "gates_builtin": {
+      "name": "support.function.aql",
+      "match": "\\b(H|X|Y|Z|S|T|SDG|TDG|SX|SXDG|RX|RY|RZ|PHASE|U1|U2|U3|CNOT|CX|CY|CZ|CH|SWAP|ISWAP|CCX|TOFFOLI|CSWAP|FREDKIN|MCX|MCZ)\\b"
+    },
+    "constants_numeric": {
+      "name": "constant.numeric.aql",
+      "match": "\\b(PI|TAU|PI_2|PI_4|PI_8|-PI|-PI_2|-PI_4|-PI_8)\\b"
+    },
+    "numbers": {
+      "name": "constant.numeric.float.aql",
+      "match": "-?[0-9]+\\.?[0-9]*([eE][+-]?[0-9]+)?"
+    },
+    "strings": {
+      "name": "string.quoted.double.aql",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        {
+          "name": "constant.character.escape.aql",
+          "match": "\\\\."
+        }
+      ]
+    },
+    "identifiers": {
+      "name": "variable.other.aql",
+      "match": "\\b[a-zA-Z_][a-zA-Z0-9_]*\\b"
+    }
+  }
+}

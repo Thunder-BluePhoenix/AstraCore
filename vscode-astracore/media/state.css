@@ -1,0 +1,71 @@
+/* State inspector webview styles */
+body {
+  background: var(--vscode-editor-background);
+  color: var(--vscode-editor-foreground);
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 13px;
+  padding: 16px;
+  margin: 0;
+}
+
+h2 {
+  color: var(--vscode-textLink-foreground);
+  font-size: 1.05em;
+  margin: 24px 0 8px;
+  border-bottom: 1px solid var(--vscode-editorGroup-border);
+  padding-bottom: 4px;
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin-bottom: 16px;
+}
+
+th, td {
+  padding: 4px 10px;
+  border: 1px solid var(--vscode-editorGroup-border);
+  text-align: left;
+}
+
+th {
+  background: var(--vscode-editorGroupHeader-tabsBackground);
+  font-weight: 600;
+}
+
+tr:nth-child(even) {
+  background: var(--vscode-list-hoverBackground);
+}
+
+/* Probability bar */
+.prob-cell {
+  position: relative;
+  min-width: 220px;
+}
+
+.bar-container {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.bar {
+  height: 14px;
+  background: var(--vscode-progressBar-background, #007acc);
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.bar-label {
+  font-size: 12px;
+  color: var(--vscode-descriptionForeground);
+  white-space: nowrap;
+}
+
+pre {
+  white-space: pre-wrap;
+  word-break: break-all;
+  background: var(--vscode-textCodeBlock-background);
+  padding: 8px;
+  border-radius: 4px;
+}

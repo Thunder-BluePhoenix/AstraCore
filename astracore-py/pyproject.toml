@@ -7,12 +7,24 @@ name = "astracore"
 version = "0.1.0"
 description = "High-performance hybrid Classical-Quantum Runtime Engine — Python bindings"
 requires-python = ">=3.8"
+license = { text = "MIT OR Apache-2.0" }
+authors = [{ name = "AstraCore Contributors" }]
+keywords = ["quantum", "simulator", "quantum-computing", "circuit", "quantum-assembly"]
 classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Rust",
+    "Programming Language :: Python :: 3",
     "Programming Language :: Python :: Implementation :: CPython",
     "Topic :: Scientific/Engineering :: Physics",
     "Intended Audience :: Science/Research",
+    "Development Status :: 4 - Beta",
 ]
+
+[project.urls]
+Homepage = "https://github.com/astracore/astracore"
+Documentation = "https://github.com/astracore/astracore/blob/master/docs/aql_spec.md"
+Repository = "https://github.com/astracore/astracore"
 
 [tool.maturin]
 features = ["pyo3/extension-module"]

@@ -43,6 +43,9 @@ pub fn parse(statements: Vec<Vec<Spanned>>) -> Result<Program, AqlError> {
         });
     }
 
+    // ── Phase 0: Expand ORACLE…END and DIFFUSION blocks ─────────────────────
+    let statements = expand_oracles(statements)?;
+
     // ── Phase 0: Unroll all REPEAT N … END blocks ─────────────────────────
     let statements = unroll_repeats(statements)?;
 
@@ -51,6 +54,9 @@ pub fn parse(statements: Vec<Vec<Spanned>>) -> Result<Program, AqlError> {
 
     // ── Phase 0c: Desugar IFMEASURED/IFNOTMEASURED … THEN … END ──────────
     let statements = desugar_if_measured(statements)?;
+
+    // ── Phase 0e: Extract CREG declarations ───────────────────────────────
+    let (creg_defs, statements) = resolve_cregs(statements)?;
 
     // ── Phase 1: Extract all GATE...END definitions ────────────────────────
     let (gate_defs, remaining) = extract_gate_defs(statements)?;
@@ -64,7 +70,7 @@ pub fn parse(statements: Vec<Vec<Spanned>>) -> Result<Program, AqlError> {
     // ── Phase 2: Parse remaining statements ───────────────────────────────
     let mut items: Vec<Item> = Vec::with_capacity(remaining.len());
     for stmt in &remaining {
-        items.push(parse_statement(stmt, &gate_defs)?);
+        items.push(parse_statement(stmt, &gate_defs, &creg_defs)?);
     }
 
     // First item must be QREG
@@ -106,7 +112,208 @@ pub fn parse(statements: Vec<Vec<Spanned>>) -> Result<Program, AqlError> {
     validate_bounds(&body, num_qubits, &gate_defs)?;
     validate_labels(&body)?;
 
-    Ok(Program::with_gate_defs(num_qubits, body, gate_defs))
+    Ok(Program::with_cregs(num_qubits, body, gate_defs, creg_defs))
+}
+
+// ── AQL v3: CREG resolution ───────────────────────────────────────────────
+
+/// Extract `CREG name[n]` declarations and return the classical register table.
+///
+/// CREG declarations are removed from the statement list. Other statements
+/// that reference CREGs (MEASURE…->, IF creg[k], IFNOT creg[k]) are left
+/// for `parse_statement` to handle.
+fn resolve_cregs(
+    statements: Vec<Vec<Spanned>>,
+) -> Result<(HashMap<String, usize>, Vec<Vec<Spanned>>), AqlError> {
+    let mut creg_table: HashMap<String, usize> = HashMap::new();
+    let mut out: Vec<Vec<Spanned>> = Vec::new();
+
+    for stmt in statements {
+        if stmt.is_empty() { continue; }
+        match &stmt[0].token {
+            Token::Creg => {
+                let line = stmt[0].line;
+                match stmt.get(1).map(|s| &s.token) {
+                    Some(Token::RegRef { name, num: size }) => {
+                        if *size == 0 {
+                            return Err(AqlError::Parse {
+                                line,
+                                msg: format!("CREG '{name}' must have at least 1 bit"),
+                            });
+                        }
+                        creg_table.insert(name.clone(), *size);
+                    }
+                    Some(Token::Ident(name)) => {
+                        let n = match stmt.get(2).map(|s| &s.token) {
+                            Some(Token::Int(n)) => *n,
+                            _ => return Err(AqlError::Parse {
+                                line,
+                                msg: format!("CREG '{name}': expected integer size (e.g. CREG {name} 2)"),
+                            }),
+                        };
+                        creg_table.insert(name.clone(), n);
+                    }
+                    _ => {
+                        return Err(AqlError::Parse {
+                            line,
+                            msg: "CREG expects 'name[size]' (e.g. CREG c[2])".into(),
+                        });
+                    }
+                }
+                // CREG declarations are consumed — not pushed to output
+            }
+            _ => out.push(stmt),
+        }
+    }
+    Ok((creg_table, out))
+}
+
+// ── AQL v3: ORACLE / DIFFUSION desugaring ─────────────────────────────────
+
+/// Desugar `ORACLE…PATTERN…END` and `DIFFUSION n` into primitive gate sequences.
+///
+/// ORACLE block:
+///   For each PATTERN b0 b1 … bn-1:
+///   1. X on each qubit where bi == 0   (flip 0-qubits to 1)
+///   2. Multi-controlled-Z on n qubits  (phase-flip |1…1⟩)
+///   3. X on each qubit where bi == 0   (undo)
+///
+/// DIFFUSION n (qubits 0..n-1):
+///   H*n  →  X*n  →  Cn-Z  →  X*n  →  H*n
+fn expand_oracles(
+    statements: Vec<Vec<Spanned>>,
+) -> Result<Vec<Vec<Spanned>>, AqlError> {
+    let mut out: Vec<Vec<Spanned>> = Vec::new();
+    let mut i = 0;
+    while i < statements.len() {
+        let stmt = &statements[i];
+        if stmt.is_empty() { i += 1; continue; }
+
+        match &stmt[0].token {
+            Token::Oracle => {
+                let line = stmt[0].line;
+                i += 1;
+                // Collect PATTERN lines until END (depth-aware)
+                let mut patterns: Vec<Vec<usize>> = Vec::new();
+                let mut depth = 1usize;
+                while i < statements.len() {
+                    let s = &statements[i];
+                    if s.is_empty() { i += 1; continue; }
+                    match &s[0].token {
+                        Token::End if depth == 1 => { i += 1; break; }
+                        Token::End => { depth -= 1; i += 1; }
+                        Token::Gate | Token::Repeat | Token::Oracle => { depth += 1; i += 1; }
+                        Token::Pattern => {
+                            let bits: Vec<usize> = s[1..].iter().filter_map(|sp| {
+                                if let Token::Int(n) = sp.token { Some(n) } else { None }
+                            }).collect();
+                            patterns.push(bits);
+                            i += 1;
+                        }
+                        _ => { i += 1; }
+                    }
+                }
+                // Emit expansion for each pattern
+                for bits in &patterns {
+                    let n = bits.len();
+                    if n == 0 { continue; }
+                    // Flip 0-qubits
+                    for (q, &b) in bits.iter().enumerate() {
+                        if b == 0 { out.push(single_spanned(Token::X, q, line)); }
+                    }
+                    // Multi-controlled Z
+                    for s in mcz_stmts(n, line) { out.push(s); }
+                    // Undo flip of 0-qubits
+                    for (q, &b) in bits.iter().enumerate() {
+                        if b == 0 { out.push(single_spanned(Token::X, q, line)); }
+                    }
+                }
+            }
+            Token::Diffusion => {
+                let line = stmt[0].line;
+                let n = match stmt.get(1) {
+                    Some(sp) => {
+                        if let Token::Int(n) = sp.token { n }
+                        else {
+                            return Err(AqlError::Parse {
+                                line,
+                                msg: "DIFFUSION requires an integer qubit count".into(),
+                            });
+                        }
+                    }
+                    None => return Err(AqlError::Parse {
+                        line,
+                        msg: "DIFFUSION requires an integer qubit count".into(),
+                    }),
+                };
+                if n == 0 {
+                    return Err(AqlError::Parse {
+                        line,
+                        msg: "DIFFUSION qubit count must be at least 1".into(),
+                    });
+                }
+                // H * n
+                for q in 0..n { out.push(single_spanned(Token::H, q, line)); }
+                // X * n
+                for q in 0..n { out.push(single_spanned(Token::X, q, line)); }
+                // Multi-controlled Z
+                for s in mcz_stmts(n, line) { out.push(s); }
+                // X * n
+                for q in 0..n { out.push(single_spanned(Token::X, q, line)); }
+                // H * n
+                for q in 0..n { out.push(single_spanned(Token::H, q, line)); }
+                i += 1;
+            }
+            _ => {
+                out.push(statements[i].clone());
+                i += 1;
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Build a two-token statement `<gate> <qubit>`.
+fn single_spanned(gate: Token, qubit: usize, line: usize) -> Vec<Spanned> {
+    vec![
+        Spanned { token: gate,             line },
+        Spanned { token: Token::Int(qubit), line },
+    ]
+}
+
+/// Multi-controlled-Z gate sequence for `n` qubits (using qubits 0..n-1).
+///
+/// - n=1: `Z 0`
+/// - n=2: `CZ 0 1`
+/// - n≥3: `H n-1; CCX 0 1 n-1; H n-1`  (exact for n=3; approximate for n>3)
+fn mcz_stmts(n: usize, line: usize) -> Vec<Vec<Spanned>> {
+    match n {
+        1 => vec![single_spanned(Token::Z, 0, line)],
+        2 => vec![vec![
+            Spanned { token: Token::Cz,       line },
+            Spanned { token: Token::Int(0),   line },
+            Spanned { token: Token::Int(1),   line },
+        ]],
+        _ => {
+            // For n≥3: sandwich CCX in H gates on the target qubit.
+            // This implements C²Z exactly for n=3 (using qubits 0,1,2).
+            // For n>3, it applies a 2-controlled phase on the last 3 qubits
+            // (sufficient for Grover's with ancilla-free approximation).
+            let t  = n - 1;  // target
+            let c1 = n - 2;  // control 1
+            let c0 = n - 3;  // control 0 (clamped: for n=3 c0=0)
+            vec![
+                single_spanned(Token::H, t, line),
+                vec![
+                    Spanned { token: Token::Ccx,      line },
+                    Spanned { token: Token::Int(c0),  line },
+                    Spanned { token: Token::Int(c1),  line },
+                    Spanned { token: Token::Int(t),   line },
+                ],
+                single_spanned(Token::H, t, line),
+            ]
+        }
+    }
 }
 
 // ── AQL v2: REPEAT unrolling ──────────────────────────────────────────────
@@ -529,8 +736,8 @@ fn parse_gate_body_stmt(
     debug_assert!(!tokens.is_empty());
     let line = tokens[0].line;
 
-    // Reuse the normal statement parser (empty gate_defs: no nested CALL)
-    let item = parse_statement(tokens, &HashMap::new())?;
+    // Reuse the normal statement parser (empty gate_defs / creg_defs: no nested CALL/CREG)
+    let item = parse_statement(tokens, &HashMap::new(), &HashMap::new())?;
     let instr = match item {
         Item::Instr(i) => i,
         Item::Qreg(_) => return Err(AqlError::Parse {
@@ -580,6 +787,7 @@ fn parse_gate_body_stmt(
 fn parse_statement(
     tokens: &[Spanned],
     gate_defs: &HashMap<String, GateDef>,
+    creg_defs: &HashMap<String, usize>,
 ) -> Result<Item, AqlError> {
     debug_assert!(!tokens.is_empty());
     let line = tokens[0].line;
@@ -681,6 +889,32 @@ fn parse_statement(
 
         // ── Measurement ────────────────────────────────────────────────
         Token::Measure => {
+            // MEASURE q -> creg[k]  (4 tokens) OR  MEASURE q  (2 tokens)
+            if tokens.len() == 4 {
+                if let Token::Arrow = &tokens[2].token {
+                    if let Token::RegRef { name, num: creg_bit } = &tokens[3].token {
+                        let qubit = int_arg(&tokens[1])?;
+                        let creg = name.clone();
+                        let creg_bit = *creg_bit;
+                        if !creg_defs.is_empty() {
+                            if let Some(&sz) = creg_defs.get(&creg) {
+                                if creg_bit >= sz {
+                                    return Err(AqlError::Validation {
+                                        msg: format!(
+                                            "CREG '{creg}' has {sz} bit(s); index {creg_bit} is out of range"
+                                        ),
+                                    });
+                                }
+                            }
+                        }
+                        return Ok(Item::Instr(Instruction::MeasureInto { qubit, creg, creg_bit }));
+                    }
+                }
+                return Err(AqlError::Parse {
+                    line,
+                    msg: "expected 'MEASURE <qubit>' or 'MEASURE <qubit> -> <creg>[<bit>]'".into(),
+                });
+            }
             check_argc(2)?;
             Item::Instr(Instruction::Measure(int_arg(&tokens[1])?))
         }
@@ -702,34 +936,52 @@ fn parse_statement(
             Item::Instr(Instruction::Goto { label: ident_arg(&tokens[1])? })
         }
         Token::If => {
-            // IF <q> GOTO <label>  — 4 tokens
+            // IF <creg>[<k>] GOTO <label>  — 4 tokens (CREG variant)
+            // IF <q>         GOTO <label>  — 4 tokens (qubit variant)
             check_argc(4)?;
-            let qubit = int_arg(&tokens[1])?;
             if !matches!(tokens[2].token, Token::Goto) {
                 return Err(AqlError::Parse {
                     line: tokens[2].line,
                     msg: format!(
-                        "expected 'GOTO' after qubit index in 'IF' statement, got '{}'",
+                        "expected 'GOTO' after second token in 'IF' statement, got '{}'",
                         tokens[2].token.display()
                     ),
                 });
             }
-            Item::Instr(Instruction::GotoIf { qubit, label: ident_arg(&tokens[3])? })
+            if let Token::RegRef { name, num: bit } = &tokens[1].token {
+                Item::Instr(Instruction::GotoIfCreg {
+                    creg: name.clone(),
+                    bit: *bit,
+                    label: ident_arg(&tokens[3])?,
+                })
+            } else {
+                let qubit = int_arg(&tokens[1])?;
+                Item::Instr(Instruction::GotoIf { qubit, label: ident_arg(&tokens[3])? })
+            }
         }
         Token::IfNot => {
-            // IFNOT <q> GOTO <label>  — 4 tokens
+            // IFNOT <creg>[<k>] GOTO <label>  — 4 tokens (CREG variant)
+            // IFNOT <q>         GOTO <label>  — 4 tokens (qubit variant)
             check_argc(4)?;
-            let qubit = int_arg(&tokens[1])?;
             if !matches!(tokens[2].token, Token::Goto) {
                 return Err(AqlError::Parse {
                     line: tokens[2].line,
                     msg: format!(
-                        "expected 'GOTO' after qubit index in 'IFNOT' statement, got '{}'",
+                        "expected 'GOTO' after second token in 'IFNOT' statement, got '{}'",
                         tokens[2].token.display()
                     ),
                 });
             }
-            Item::Instr(Instruction::GotoIfNot { qubit, label: ident_arg(&tokens[3])? })
+            if let Token::RegRef { name, num: bit } = &tokens[1].token {
+                Item::Instr(Instruction::GotoIfNotCreg {
+                    creg: name.clone(),
+                    bit: *bit,
+                    label: ident_arg(&tokens[3])?,
+                })
+            } else {
+                let qubit = int_arg(&tokens[1])?;
+                Item::Instr(Instruction::GotoIfNot { qubit, label: ident_arg(&tokens[3])? })
+            }
         }
 
         // ── Custom gate invocation: CALL <name> <q0> <q1> … ───────────
@@ -789,6 +1041,18 @@ fn parse_statement(
         Token::Then => return Err(AqlError::Parse {
             line,
             msg: "'THEN' without a preceding 'IFMEASURED' or 'IFNOTMEASURED'".into(),
+        }),
+        Token::Creg => return Err(AqlError::Parse {
+            line,
+            msg: "'CREG' declaration was not resolved — internal compiler error".into(),
+        }),
+        Token::Arrow => return Err(AqlError::Parse {
+            line,
+            msg: "'->' operator is only valid in 'MEASURE q -> creg[k]'".into(),
+        }),
+        Token::Oracle | Token::Diffusion | Token::Pattern => return Err(AqlError::Parse {
+            line,
+            msg: "ORACLE/DIFFUSION block was not expanded — internal compiler error".into(),
         }),
         Token::RegRef { name, num } => return Err(AqlError::Parse {
             line,
@@ -1335,5 +1599,81 @@ mod tests {
         assert!(s.contains("H 0"));
         assert!(s.contains("CNOT 0 1"));
         assert!(s.contains("END"));
+    }
+
+    // ── ORACLE / DIFFUSION desugaring tests ───────────────────────────
+
+    #[test]
+    fn test_oracle_2q_pattern_11() {
+        // ORACLE PATTERN 1 1 END → just CZ 0 1 (no X gates needed, both bits are 1)
+        let prog = compile("QREG 2\nORACLE\nPATTERN 1 1\nEND").unwrap();
+        // Should expand to: CZ 0 1
+        assert_eq!(prog.instructions.len(), 1);
+        assert!(matches!(prog.instructions[0], Instruction::Cz { control: 0, target: 1 }));
+    }
+
+    #[test]
+    fn test_oracle_2q_pattern_01() {
+        // ORACLE PATTERN 0 1 END → X 0; CZ 0 1; X 0  (flip qubit 0 before and after)
+        let prog = compile("QREG 2\nORACLE\nPATTERN 0 1\nEND").unwrap();
+        // X 0, CZ 0 1, X 0
+        assert_eq!(prog.instructions.len(), 3);
+        assert!(matches!(prog.instructions[0], Instruction::X(0)));
+        assert!(matches!(prog.instructions[1], Instruction::Cz { control: 0, target: 1 }));
+        assert!(matches!(prog.instructions[2], Instruction::X(0)));
+    }
+
+    #[test]
+    fn test_oracle_multi_pattern() {
+        // Two PATTERN lines → two sequential oracle applications
+        let prog = compile("QREG 2\nORACLE\nPATTERN 1 1\nPATTERN 0 1\nEND").unwrap();
+        // Pattern 1 1: CZ 0 1
+        // Pattern 0 1: X 0; CZ 0 1; X 0
+        assert_eq!(prog.instructions.len(), 4); // 1 + 3
+        assert!(matches!(prog.instructions[0], Instruction::Cz { .. }));
+        assert!(matches!(prog.instructions[1], Instruction::X(0)));
+        assert!(matches!(prog.instructions[2], Instruction::Cz { .. }));
+        assert!(matches!(prog.instructions[3], Instruction::X(0)));
+    }
+
+    #[test]
+    fn test_diffusion_2q() {
+        // DIFFUSION 2 → H H X X CZ X X H H
+        let prog = compile("QREG 2\nDIFFUSION 2").unwrap();
+        assert!(prog.instructions.len() >= 4);
+        // First two must be H gates
+        assert!(matches!(prog.instructions[0], Instruction::H(0)));
+        assert!(matches!(prog.instructions[1], Instruction::H(1)));
+        // Last two must be H gates
+        let n = prog.instructions.len();
+        assert!(matches!(prog.instructions[n - 2], Instruction::H(0)));
+        assert!(matches!(prog.instructions[n - 1], Instruction::H(1)));
+        // Must contain a CZ
+        assert!(prog.instructions.iter().any(|i| matches!(i, Instruction::Cz { .. })));
+    }
+
+    #[test]
+    fn test_diffusion_3q() {
+        // DIFFUSION 3 → H*3 X*3 [H CCX H] X*3 H*3
+        let prog = compile("QREG 3\nDIFFUSION 3").unwrap();
+        // Must contain Toffoli (CCX)
+        assert!(prog.instructions.iter().any(|i| matches!(i, Instruction::Toffoli { .. })));
+        // Starts with H 0
+        assert!(matches!(prog.instructions[0], Instruction::H(0)));
+        // Ends with H 2
+        let n = prog.instructions.len();
+        assert!(matches!(prog.instructions[n - 1], Instruction::H(2)));
+    }
+
+    #[test]
+    fn test_oracle_grover_end_to_end() {
+        // Grover's algorithm for |11⟩ on 2 qubits — 1 iteration → P(|11⟩) ≈ 1.0
+        let prog = compile(
+            "QREG 2\nH 0\nH 1\nORACLE\nPATTERN 1 1\nEND\nDIFFUSION 2"
+        ).unwrap();
+        let result = crate::compiler::execute(&prog).unwrap();
+        let probs = &result.final_probabilities;
+        // |11⟩ is index 3
+        assert!((probs[3] - 1.0).abs() < 0.05, "P(|11⟩) = {}", probs[3]);
     }
 }

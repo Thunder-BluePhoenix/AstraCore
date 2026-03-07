@@ -172,16 +172,16 @@ async fn handler_shots(
 
 /// A single snapshot of the quantum state after applying one instruction.
 #[derive(serde::Serialize)]
-struct StepSnapshot {
-    step:          usize,
-    label:         String,
-    probabilities: Vec<f64>,
+pub(crate) struct StepSnapshot {
+    pub(crate) step:          usize,
+    pub(crate) label:         String,
+    pub(crate) probabilities: Vec<f64>,
 }
 
 /// Execute `program` instruction-by-instruction, returning a state snapshot
 /// after each gate. Capped at 100 snapshots. Control-flow (GOTO/IF) terminates
 /// the trace with a warning label. CallGate is treated as an opaque step.
-fn execute_steps(program: &Program) -> Vec<StepSnapshot> {
+pub(crate) fn execute_steps(program: &Program) -> Vec<StepSnapshot> {
     let n = program.num_qubits;
     let mut state = StateVector::new(n);
     let mut snaps: Vec<StepSnapshot> = Vec::new();
@@ -246,6 +246,26 @@ fn execute_steps(program: &Program) -> Vec<StepSnapshot> {
                 snaps.push(StepSnapshot {
                     step:  idx + 1,
                     label: format!("\u{21aa} IFNOT q{qubit} GOTO {label}  \u{26a0} branch depends on measurement"),
+                    probabilities: state_probs(&state),
+                });
+                continue;
+            }
+
+            Instruction::MeasureInto { qubit, .. } => {
+                state.collapse(*qubit, rand::random::<f64>());
+            }
+            Instruction::GotoIfCreg { creg, bit, label } => {
+                snaps.push(StepSnapshot {
+                    step:  idx + 1,
+                    label: format!("\u{21aa} IF {creg}[{bit}] GOTO {label}  \u{26a0} branch depends on CREG"),
+                    probabilities: state_probs(&state),
+                });
+                continue;
+            }
+            Instruction::GotoIfNotCreg { creg, bit, label } => {
+                snaps.push(StepSnapshot {
+                    step:  idx + 1,
+                    label: format!("\u{21aa} IFNOT {creg}[{bit}] GOTO {label}  \u{26a0} branch depends on CREG"),
                     probabilities: state_probs(&state),
                 });
                 continue;
@@ -360,6 +380,12 @@ fn instr_to_py(instr: &Instruction) -> String {
             let qs = qubits.iter().map(|q| q.to_string()).collect::<Vec<_>>().join(", ");
             format!("c.call(\"{}\", [{}])", name, qs)
         }
+        Instruction::MeasureInto { qubit, creg, creg_bit } =>
+            format!("c.measure_into({}, \"{}\", {})", qubit, creg, creg_bit),
+        Instruction::GotoIfCreg { creg, bit, label } =>
+            format!("# IF {}[{}] GOTO {}", creg, bit, label),
+        Instruction::GotoIfNotCreg { creg, bit, label } =>
+            format!("# IFNOT {}[{}] GOTO {}", creg, bit, label),
     }
 }
 
@@ -465,6 +491,72 @@ mod tests {
         // 2 qubits → 4 amplitudes; |00⟩ = index 0 should have prob ≈ 1.0
         assert!(probs[0] > 0.99, "P(|00⟩) should be 1.0 initially, got {}", probs[0]);
         assert!(probs[1..].iter().all(|&p| p < 1e-10));
+    }
+
+    #[test]
+    fn execute_steps_toffoli_adds_snapshot() {
+        // Toffoli gate should produce a new step snapshot
+        let prog = compiler::parse_source("QREG 3\nH 0\nCNOT 0 1\nCCX 0 1 2").unwrap();
+        let snaps = execute_steps(&prog);
+        // Initial + H + CNOT + Toffoli = 4 snapshots
+        assert!(snaps.len() >= 4, "Expected ≥4 snapshots for Toffoli circuit, got {}", snaps.len());
+        let toffoli_snap = snaps.iter().find(|s| s.label.contains("Toffoli"));
+        assert!(toffoli_snap.is_some(), "Expected a snapshot labeled 'Toffoli'");
+    }
+
+    #[test]
+    fn execute_steps_barrier_skipped() {
+        // BARRIER is structural — it should NOT produce a new state snapshot
+        let prog = compiler::parse_source("QREG 2\nH 0\nBARRIER\nH 1").unwrap();
+        let snaps_no_barrier = execute_steps(
+            &compiler::parse_source("QREG 2\nH 0\nH 1").unwrap()
+        );
+        let snaps_with_barrier = execute_steps(&prog);
+        // Both should produce the same number of snapshots (BARRIER is skipped)
+        assert_eq!(
+            snaps_no_barrier.len(), snaps_with_barrier.len(),
+            "BARRIER should not add a snapshot"
+        );
+    }
+
+    #[test]
+    fn execute_steps_measureall_probs_sum_to_one() {
+        let prog = compiler::parse_source("QREG 2\nH 0\nCNOT 0 1\nMEASURE_ALL").unwrap();
+        let snaps = execute_steps(&prog);
+        // After MeasureAll the probabilities should sum to ≈ 1.0
+        let last = snaps.last().unwrap();
+        let total: f64 = last.probabilities.iter().sum();
+        assert!((total - 1.0).abs() < 1e-9, "Probabilities should sum to 1.0, got {}", total);
+    }
+
+    #[test]
+    fn build_json_has_circuit_svg_key() {
+        let prog = bell_program();
+        let analysis = compiler::analyze_source("QREG 2\nH 0\nCNOT 0 1\nMEASURE_ALL").unwrap();
+        let result = compiler::run("QREG 2\nH 0\nCNOT 0 1\nMEASURE_ALL").unwrap();
+        let svg = crate::dashboard::circuit_svg::render(&prog.instructions, prog.num_qubits);
+        let data = DashboardData {
+            source_path: "test".to_string(),
+            analysis,
+            result,
+            circuit_svg: svg,
+        };
+        let json = build_json(&data);
+        assert!(json.get("circuit_svg").is_some(), "build_json must include 'circuit_svg' key");
+        let svg_val = json["circuit_svg"].as_str().unwrap_or("");
+        assert!(!svg_val.is_empty(), "circuit_svg should not be empty");
+    }
+
+    #[test]
+    fn handler_steps_invalid_source_produces_error_field() {
+        // Simulate what handler_steps does internally — invalid AQL source
+        let src = "QREG 2\nNOT_A_GATE 0\n";
+        let result = compiler::parse_source(src);
+        assert!(result.is_err(), "Invalid source should fail to parse");
+        let err_json = serde_json::json!({ "error": result.unwrap_err().to_string() });
+        assert!(err_json.get("error").is_some(), "Error JSON must have 'error' key");
+        let msg = err_json["error"].as_str().unwrap();
+        assert!(!msg.is_empty(), "Error message should not be empty");
     }
 }
 

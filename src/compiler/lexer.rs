@@ -53,6 +53,15 @@ pub enum Token {
     IfNotMeasured,  // IFNOTMEASURED <q> THEN … END — if qubit==0
     Then,           // THEN                          — opens the body
 
+    // ── AQL v3: Grover oracle / diffusion ────────────────────────────
+    Oracle,    // ORACLE … END   — phase oracle block (desugared at parse time)
+    Diffusion, // DIFFUSION n    — Grover diffusion operator (desugared at parse time)
+    Pattern,   // PATTERN b0 b1 … — bit pattern inside an ORACLE block
+
+    // ── AQL v3: named classical registers ────────────────────────────
+    Creg,  // CREG name[n]     — declare n-bit classical register
+    Arrow, // ->               — measure-into operator (MEASURE q -> creg[k])
+
     // ── AQL v2: named register reference: ident[n] ───────────────────
     RegRef { name: String, num: usize },  // e.g. data[0], ancilla[2]
 
@@ -97,6 +106,11 @@ impl Token {
             Token::IfMeasured    => "IFMEASURED".into(),
             Token::IfNotMeasured => "IFNOTMEASURED".into(),
             Token::Then          => "THEN".into(),
+            Token::Oracle    => "ORACLE".into(),
+            Token::Diffusion => "DIFFUSION".into(),
+            Token::Pattern   => "PATTERN".into(),
+            Token::Creg      => "CREG".into(),
+            Token::Arrow     => "->".into(),
             Token::RegRef { name, num } => format!("{name}[{num}]"),
             Token::Int(n)     => n.to_string(),
             Token::Float(f)   => format!("{f}"),
@@ -190,6 +204,13 @@ fn lex_word(word: &str, line: usize) -> Result<Token, AqlError> {
         "IFMEASURED"           => return Ok(Token::IfMeasured),
         "IFNOTMEASURED"        => return Ok(Token::IfNotMeasured),
         "THEN"                 => return Ok(Token::Then),
+        // AQL v3: Grover oracle / diffusion
+        "ORACLE"               => return Ok(Token::Oracle),
+        "DIFFUSION"            => return Ok(Token::Diffusion),
+        "PATTERN"              => return Ok(Token::Pattern),
+        // AQL v3: named classical registers
+        "CREG"                 => return Ok(Token::Creg),
+        "->"                   => return Ok(Token::Arrow),
         // Math constants → resolved to Float immediately
         "PI"                   => return Ok(Token::Float(consts::PI)),
         "TAU"                  => return Ok(Token::Float(consts::TAU)),

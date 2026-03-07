@@ -141,10 +141,69 @@ jobs:
           name: wheels-${{ matrix.target }}
           path: astracore-py/dist/*.whl
 
+  # ── Build VS Code extension ────────────────────────────────────────────────
+  build-extension:
+    name: VS Code Extension
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: vscode-astracore/package.json
+
+      - name: Install dependencies
+        working-directory: vscode-astracore
+        run: npm ci
+
+      - name: Compile TypeScript
+        working-directory: vscode-astracore
+        run: npm run compile
+
+      - name: Package VSIX
+        working-directory: vscode-astracore
+        run: npx vsce package -o ../astracore-vscode.vsix
+
+      - name: Upload VSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vscode-extension
+          path: astracore-vscode.vsix
+
+      - name: Publish to VS Code Marketplace
+        if: startsWith(github.ref, 'refs/tags/v')
+        working-directory: vscode-astracore
+        run: npx vsce publish --pat ${{ secrets.VSCE_TOKEN }}
+
+  # ── Publish Python wheels to PyPI (OIDC trusted publishing) ───────────────
+  publish-pypi:
+    name: Publish to PyPI
+    needs: [build-wheels]
+    runs-on: ubuntu-22.04
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      id-token: write   # required for OIDC trusted publishing
+
+    steps:
+      - name: Download all wheel artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          merge-multiple: true
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+
   # ── Create GitHub Release ──────────────────────────────────────────────────
   release:
     name: Create Release
-    needs: [build-binaries, build-wheels]
+    needs: [build-binaries, build-wheels, build-extension]
     runs-on: ubuntu-22.04
     permissions:
       contents: write
@@ -181,5 +240,6 @@ jobs:
             artifacts/**/*.zip
             artifacts/**/*.zip.sha256
             artifacts/**/*.whl
+            artifacts/**/*.vsix
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}

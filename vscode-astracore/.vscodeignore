@@ -1,0 +1,11 @@
+node_modules/**
+src/**
+.gitignore
+tsconfig.json
+**/*.ts
+!out/**
+!syntaxes/**
+!media/**
+!language-configuration.json
+!package.json
+!README.md

@@ -1,0 +1,41 @@
+version: "3.9"
+
+services:
+  astracore:
+    image: astracore:latest
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: playground-app
+    restart: unless-stopped
+    environment:
+      - RUST_LOG=info
+    command: ["serve", "--port", "3000"]
+    ports:
+      - "3000"          # internal only; nginx proxies externally
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/data"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: playground-nginx
+    restart: unless-stopped
+    depends_on:
+      astracore:
+        condition: service_healthy
+    ports:
+      - "${PUBLIC_PORT:-8080}:8080"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+networks:
+  default:
+    name: playground-net

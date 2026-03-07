@@ -248,6 +248,12 @@ pub fn execute_with_plugins(
                     continue;
                 }
             }
+            Instruction::MeasureInto { .. } | Instruction::GotoIfCreg { .. }
+            | Instruction::GotoIfNotCreg { .. } => {
+                return Err(AqlError::Runtime {
+                    msg: "CREG instructions not supported in plugin executor; use the default backend".to_string(),
+                });
+            }
         }
 
         pc += 1;

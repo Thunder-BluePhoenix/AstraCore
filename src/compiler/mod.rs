@@ -19,11 +19,13 @@ pub mod lexer;
 pub mod parser;
 pub mod qasm_export;
 pub mod qasm_import;
+pub mod qasm3_import;
 
 pub use analysis::{analyze, CircuitAnalysis};
 pub use crate::runtime::{execute, ExecutionResult, MeasurementRecord};
 pub use ir::{Instruction, Program};
 pub use parser::parse;
+pub use qasm3_import::from_qasm3;
 
 /// Error type shared across all compiler stages.
 #[derive(Debug, Clone)]

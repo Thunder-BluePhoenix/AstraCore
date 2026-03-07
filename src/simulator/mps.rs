@@ -597,6 +597,12 @@ pub fn execute_mps(program: &Program, bond_dim: usize) -> Result<ExecutionResult
                     });
                 }
             }
+            Instruction::MeasureInto { .. } | Instruction::GotoIfCreg { .. }
+            | Instruction::GotoIfNotCreg { .. } => {
+                return Err(AqlError::Runtime {
+                    msg: "CREG instructions not supported in MPS backend; use --backend statevector".to_string(),
+                });
+            }
         }
         pc += 1;
     }

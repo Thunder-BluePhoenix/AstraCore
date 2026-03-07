@@ -1,0 +1,125 @@
+{
+  "name": "vscode-astracore",
+  "displayName": "AstraCore — AQL Quantum Assembly",
+  "description": "AQL language support: syntax highlighting, LSP diagnostics, hover, completion, go-to-definition, and visual circuit debugger.",
+  "version": "0.1.0",
+  "publisher": "astracore",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/astracore/astracore"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Debuggers",
+    "Visualization"
+  ],
+  "activationEvents": [
+    "onLanguage:aql"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "aql",
+        "aliases": ["AQL", "aql"],
+        "extensions": [".aql"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "aql",
+        "scopeName": "source.aql",
+        "path": "./syntaxes/aql.tmLanguage.json"
+      }
+    ],
+    "debuggers": [
+      {
+        "type": "aql",
+        "label": "AQL Debug",
+        "program": "./out/debugAdapter.js",
+        "runtime": "node",
+        "languages": ["aql"],
+        "configurationAttributes": {
+          "launch": {
+            "required": ["program"],
+            "properties": {
+              "program": {
+                "type": "string",
+                "description": "Path to the .aql file to debug.",
+                "default": "${file}"
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "aql",
+            "request": "launch",
+            "name": "Debug AQL Program",
+            "program": "${file}"
+          }
+        ]
+      }
+    ],
+    "commands": [
+      {
+        "command": "astracore.showCircuit",
+        "title": "AstraCore: Show Circuit Diagram",
+        "icon": "$(circuit-board)"
+      },
+      {
+        "command": "astracore.showState",
+        "title": "AstraCore: Show State Inspector",
+        "icon": "$(graph)"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "astracore.showCircuit",
+          "when": "resourceLangId == aql",
+          "group": "navigation"
+        },
+        {
+          "command": "astracore.showState",
+          "when": "resourceLangId == aql",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "AstraCore",
+      "properties": {
+        "astracore.serverPath": {
+          "type": "string",
+          "default": "astracore",
+          "description": "Path to the astracore binary. Defaults to 'astracore' (must be on PATH)."
+        },
+        "astracore.dashboardPort": {
+          "type": "number",
+          "default": 8080,
+          "description": "Port used by the AstraCore dashboard server for circuit/state panels."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "npx vsce package",
+    "publish": "npx vsce publish"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.0"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "@vscode/debugadapter": "^1.65.0",
+    "typescript": "^5.0.0"
+  }
+}

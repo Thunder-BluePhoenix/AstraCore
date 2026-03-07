@@ -100,4 +100,29 @@ mod tests {
             panic!("expected merged Rz");
         }
     }
+
+    #[test]
+    fn test_scheduler_empty_circuit() {
+        // Empty instruction list → empty ScheduledProgram
+        let prog = Program::new(1, vec![]);
+        let scheduled = schedule(&prog);
+        assert_eq!(scheduled.num_qubits, 1);
+        assert!(scheduled.instructions.is_empty(), "Empty circuit should stay empty after scheduling");
+        assert_eq!(scheduled.metadata.gates_merged, 0);
+    }
+
+    #[test]
+    fn test_scheduler_order_preserved_for_non_cancellable() {
+        // X followed by H on different qubits: no cancellation, order preserved
+        let prog = Program::new(2, vec![
+            Instruction::X(0),
+            Instruction::H(1),
+            Instruction::Cnot { control: 0, target: 1 },
+        ]);
+        let scheduled = schedule(&prog);
+        assert_eq!(scheduled.instructions.len(), 3, "No instructions should be removed");
+        assert!(matches!(scheduled.instructions[0], Instruction::X(0)));
+        assert!(matches!(scheduled.instructions[1], Instruction::H(1)));
+        assert!(matches!(scheduled.instructions[2], Instruction::Cnot { control: 0, target: 1 }));
+    }
 }

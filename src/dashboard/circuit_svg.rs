@@ -321,7 +321,11 @@ fn qubits_of(instr: &Instruction, num_qubits: usize) -> Vec<usize> {
         | Instruction::Goto { .. }
         | Instruction::GotoIf { .. }
         | Instruction::GotoIfNot { .. }
+        | Instruction::GotoIfCreg { .. }
+        | Instruction::GotoIfNotCreg { .. }
         | Instruction::Barrier => vec![],
+
+        Instruction::MeasureInto { qubit, .. } => vec![*qubit],
     }
 }
 

@@ -1,0 +1,40 @@
+/* Circuit diagram webview styles */
+body {
+  background: var(--vscode-editor-background);
+  color: var(--vscode-editor-foreground);
+  font-family: var(--vscode-editor-font-family, monospace);
+  padding: 16px;
+  margin: 0;
+}
+
+h1, h2 {
+  color: var(--vscode-textLink-foreground);
+  font-size: 1.1em;
+  margin: 0 0 12px;
+}
+
+svg {
+  max-width: 100%;
+  height: auto;
+  display: block;
+}
+
+.circuit-container {
+  overflow-x: auto;
+  border: 1px solid var(--vscode-editorGroup-border);
+  border-radius: 4px;
+  padding: 8px;
+}
+
+.error-box {
+  color: var(--vscode-errorForeground);
+  border: 1px solid var(--vscode-errorForeground);
+  border-radius: 4px;
+  padding: 8px 12px;
+  margin-top: 8px;
+}
+
+pre {
+  white-space: pre-wrap;
+  word-break: break-all;
+}

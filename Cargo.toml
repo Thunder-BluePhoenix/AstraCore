@@ -14,6 +14,21 @@ path = "src/main.rs"
 name = "astracore"
 path = "src/lib.rs"
 
+# ── Optional GPU features ─────────────────────────────────────────────────────
+# Build without GPU (default — any machine):
+#   cargo build --release
+# Build with WebGPU (AMD / Intel / Apple Silicon / NVIDIA via Vulkan/Metal):
+#   cargo build --release --features wgpu
+# Build with CUDA (NVIDIA GPU + CUDA Toolkit 11+ required):
+#   cargo build --release --features cuda
+[features]
+default = []
+wgpu    = ["dep:wgpu", "dep:pollster"]   # cross-platform GPU via wgpu compute shaders
+cuda    = ["dep:cudarc"]                  # NVIDIA CUDA via cudarc
+gpu     = ["wgpu"]                        # alias: `--features gpu` → wgpu by default
+dist    = []                              # distributed multi-node simulation (uses tokio + serde_json already in deps)
+lsp     = ["dep:tower-lsp", "dep:tokio-util"]  # AQL language server + DAP debugger (astracore lsp / astracore dap)
+
 [dependencies]
 rand        = "0.8"
 ratatui     = "0.29"
@@ -22,6 +37,15 @@ axum        = "0.8"
 tokio       = { version = "1", features = ["rt-multi-thread", "net"] }
 serde       = { version = "1", features = ["derive"] }
 serde_json  = "1"
+
+# ── Optional GPU dependencies ─────────────────────────────────────────────────
+wgpu     = { version = "22", optional = true }
+pollster = { version = "0.3", optional = true }   # block-on helper for wgpu init
+cudarc   = { version = "0.12", optional = true }  # NVIDIA CUDA runtime bindings
+
+# ── Optional LSP/DAP dependencies ─────────────────────────────────────────────
+tower-lsp  = { version = "0.20", optional = true }  # AQL language server (LSP)
+tokio-util = { version = "0.7",  optional = true }  # codec for LSP message framing
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

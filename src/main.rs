@@ -16,6 +16,11 @@ fn main() {
         Some("serve")                   => cli_serve(args.get(2).map(String::as_str), args.get(3).map(String::as_str)),
         Some("export")                  => cli_export(args.get(2).map(String::as_str), args.get(3).map(String::as_str)),
         Some("import")                  => cli_import(args.get(2).map(String::as_str)),
+        Some("import3")                 => cli_import3(args.get(2).map(String::as_str)),
+        Some("devices")                 => cli_devices(),
+        Some("worker")                  => cli_worker(&args[2..]),
+        Some("lsp")                     => cli_lsp(),
+        Some("dap")                     => cli_dap(),
         Some("help") | Some("--help")   => print_help(),
         Some(unknown) => {
             eprintln!("Unknown command '{}'. Run 'astracore help' for usage.", unknown);
@@ -28,7 +33,7 @@ fn main() {
 
 /// Simulation backend selection.
 #[derive(Clone, Copy, PartialEq)]
-enum Backend { Statevector, Mps, Clifford, Sparse }
+enum Backend { Statevector, Mps, Clifford, Sparse, Gpu, Wgpu, Cuda, Dist }
 
 /// Parse `run` arguments: `<file.aql> [--backend sv|mps|clifford|sparse] [--bond-dim N] [--shots N]`
 fn cli_run(args: &[String]) {
@@ -38,9 +43,11 @@ fn cli_run(args: &[String]) {
     }
 
     let path = &args[0];
-    let mut backend = Backend::Statevector;
+    let mut backend  = Backend::Statevector;
     let mut bond_dim: usize = 64;
     let mut n_shots: Option<usize> = None;
+    let mut dist_nodes: Option<String> = None;
+    let mut dist_cluster: Option<String> = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -51,9 +58,13 @@ fn cli_run(args: &[String]) {
                     Some("mps")         => Backend::Mps,
                     Some("clifford") | Some("stabilizer") => Backend::Clifford,
                     Some("sparse")      => Backend::Sparse,
+                    Some("gpu")         => Backend::Gpu,
+                    Some("wgpu")        => Backend::Wgpu,
+                    Some("cuda")        => Backend::Cuda,
+                    Some("dist") | Some("distributed") => Backend::Dist,
                     Some("statevector") | Some("sv") | Some("default") => Backend::Statevector,
                     other => {
-                        eprintln!("Unknown backend '{}'  (choices: statevector, mps, clifford, sparse)",
+                        eprintln!("Unknown backend '{}'  (choices: statevector, mps, clifford, sparse, gpu, wgpu, cuda, dist)",
                                   other.unwrap_or(""));
                         std::process::exit(1);
                     }
@@ -77,6 +88,15 @@ fn cli_run(args: &[String]) {
                         std::process::exit(1);
                     }));
             }
+            "--dist" => { backend = Backend::Dist; }
+            "--nodes" | "-n" => {
+                i += 1;
+                dist_nodes = args.get(i).map(String::clone);
+            }
+            "--cluster" => {
+                i += 1;
+                dist_cluster = args.get(i).map(String::clone);
+            }
             flag => { eprintln!("Unknown flag '{flag}'"); std::process::exit(1); }
         }
         i += 1;
@@ -92,6 +112,13 @@ fn cli_run(args: &[String]) {
         Backend::Mps         => format!("mps (bond-dim={bond_dim})"),
         Backend::Clifford    => "clifford (stabilizer)".to_string(),
         Backend::Sparse      => "sparse statevector".to_string(),
+        Backend::Gpu         => "gpu (auto: wgpu or cuda)".to_string(),
+        Backend::Wgpu        => "wgpu (WebGPU)".to_string(),
+        Backend::Cuda        => "cuda (NVIDIA CUDA)".to_string(),
+        Backend::Dist        => {
+            let nodes_str = dist_nodes.as_deref().or(dist_cluster.as_deref()).unwrap_or("(no nodes)");
+            format!("distributed ({nodes_str})")
+        }
     };
     println!("━━━ AstraCore AQL Runner ━━━━━━━━━━━━━━━━━━━━━━━━");
     println!("File   : {path}");
@@ -135,6 +162,68 @@ fn cli_run(args: &[String]) {
         Backend::Sparse => match astracore::simulator::execute_sparse(&program) {
             Ok(r) => r,
             Err(e) => { eprintln!("Sparse runtime error: {e}"); std::process::exit(1); }
+        },
+        Backend::Gpu => {
+            #[cfg(any(feature = "wgpu", feature = "cuda"))]
+            match astracore::simulator::execute_gpu(&program) {
+                Ok(r) => r,
+                Err(e) => { eprintln!("GPU runtime error: {e}"); std::process::exit(1); }
+            }
+            #[cfg(not(any(feature = "wgpu", feature = "cuda")))]
+            {
+                eprintln!("GPU backend not compiled in. Rebuild with: cargo build --release --features wgpu");
+                std::process::exit(1);
+            }
+        },
+        Backend::Wgpu => {
+            #[cfg(feature = "wgpu")]
+            match astracore::simulator::execute_wgpu(&program) {
+                Ok(r) => r,
+                Err(e) => { eprintln!("wgpu runtime error: {e}"); std::process::exit(1); }
+            }
+            #[cfg(not(feature = "wgpu"))]
+            {
+                eprintln!("wgpu backend not compiled in. Rebuild with: cargo build --release --features wgpu");
+                std::process::exit(1);
+            }
+        },
+        Backend::Cuda => {
+            #[cfg(feature = "cuda")]
+            match astracore::simulator::execute_cuda(&program) {
+                Ok(r) => r,
+                Err(e) => { eprintln!("CUDA runtime error: {e}"); std::process::exit(1); }
+            }
+            #[cfg(not(feature = "cuda"))]
+            {
+                eprintln!("CUDA backend not compiled in. Rebuild with: cargo build --release --features cuda");
+                std::process::exit(1);
+            }
+        },
+        Backend::Dist => {
+            // Resolve node addresses from --nodes or --cluster.
+            let addrs = if let Some(nodes_str) = dist_nodes.as_ref() {
+                match astracore::simulator::parse_nodes(nodes_str) {
+                    Ok(a)  => a,
+                    Err(e) => { eprintln!("{e}"); std::process::exit(1); }
+                }
+            } else if let Some(cluster_path) = dist_cluster.as_ref() {
+                let toml = match std::fs::read_to_string(cluster_path) {
+                    Ok(s)  => s,
+                    Err(e) => { eprintln!("Cannot read cluster file '{cluster_path}': {e}"); std::process::exit(1); }
+                };
+                match astracore::simulator::ClusterConfig::from_str(&toml) {
+                    Ok(cfg) => cfg.addresses(),
+                    Err(e)  => { eprintln!("{e}"); std::process::exit(1); }
+                }
+            } else {
+                eprintln!("--dist requires --nodes 'host:port,...' or --cluster cluster.toml");
+                std::process::exit(1);
+            };
+
+            match astracore::simulator::execute_distributed(&program, &addrs) {
+                Ok(r)  => r,
+                Err(e) => { eprintln!("Distributed runtime error: {e}"); std::process::exit(1); }
+            }
         },
     };
 
@@ -181,6 +270,17 @@ fn run_shots_with_backend(
             Backend::Sparse      => astracore::simulator::execute_sparse(program),
             Backend::Mps         => astracore::simulator::execute_mps(program, bond_dim),
             Backend::Clifford    => astracore::simulator::execute_clifford(program),
+            #[cfg(any(feature = "wgpu", feature = "cuda"))]
+            Backend::Gpu  => astracore::simulator::execute_gpu(program).map_err(|e| e),
+            #[cfg(feature = "wgpu")]
+            Backend::Wgpu => astracore::simulator::execute_wgpu(program).map_err(|e| e),
+            #[cfg(feature = "cuda")]
+            Backend::Cuda => astracore::simulator::execute_cuda(program).map_err(|e| e),
+            // Without GPU features compiled in, fall back to statevector
+            #[cfg(not(any(feature = "wgpu", feature = "cuda")))]
+            Backend::Gpu | Backend::Wgpu | Backend::Cuda => astracore::runtime::execute(program),
+            // Distributed backend not supported in shot mode (single-node fallback)
+            Backend::Dist => astracore::runtime::execute(program),
         };
         let result = match result {
             Ok(r) => r,
@@ -276,6 +376,75 @@ fn cli_export(path: Option<&str>, out: Option<&str>) {
     match std::fs::write(&output, &qasm) {
         Ok(()) => println!("OpenQASM 2.0 written to '{output}'."),
         Err(e) => { eprintln!("Write error: {e}"); std::process::exit(1); }
+    }
+}
+
+/// `astracore lsp` — start AQL Language Server on stdin/stdout.
+fn cli_lsp() {
+    #[cfg(feature = "lsp")]
+    {
+        tokio::runtime::Runtime::new()
+            .expect("tokio runtime")
+            .block_on(astracore::lsp::run_lsp());
+    }
+    #[cfg(not(feature = "lsp"))]
+    {
+        eprintln!("AQL language server not compiled in. Rebuild with: cargo build --features lsp");
+        std::process::exit(1);
+    }
+}
+
+/// `astracore dap` — start AQL Debug Adapter on stdin/stdout.
+fn cli_dap() {
+    #[cfg(feature = "lsp")]
+    {
+        tokio::runtime::Runtime::new()
+            .expect("tokio runtime")
+            .block_on(astracore::lsp::run_dap());
+    }
+    #[cfg(not(feature = "lsp"))]
+    {
+        eprintln!("AQL debug adapter not compiled in. Rebuild with: cargo build --features lsp");
+        std::process::exit(1);
+    }
+}
+
+/// `astracore import3 <file.qasm>` — import and run an OpenQASM 3.0 file.
+fn cli_import3(path: Option<&str>) {
+    let path = path.unwrap_or_else(|| {
+        eprintln!("Usage: astracore import3 <file.qasm>");
+        std::process::exit(1);
+    });
+    let source = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => { eprintln!("Cannot read '{path}': {e}"); std::process::exit(1); }
+    };
+    println!("━━━ AstraCore OpenQASM 3.0 Importer ━━━━━━━━━━━━━━");
+    println!("File: {path}\n");
+    let program = match compiler::qasm3_import::from_qasm3(&source) {
+        Ok(p) => p,
+        Err(e) => { eprintln!("QASM 3.0 parse error: {e}"); std::process::exit(1); }
+    };
+    println!("Circuit: {} gate(s) | {} qubit(s)\n",
+             program.gate_count, program.num_qubits);
+    let result = match compiler::execute(&program) {
+        Ok(r) => r,
+        Err(e) => { eprintln!("Runtime error: {e}"); std::process::exit(1); }
+    };
+    if !result.final_probabilities.is_empty() {
+        let display_probs = result.pre_measurement_probs.as_deref()
+            .unwrap_or(&result.final_probabilities);
+        println!("Final state:");
+        for (lbl, prob) in result.significant_states(display_probs, 1e-6) {
+            println!("  |{lbl}⟩  {prob:.6}");
+        }
+        println!();
+    }
+    if !result.measurements.is_empty() {
+        println!("Measurement results:");
+        for m in &result.measurements {
+            println!("  q{}  →  {}", m.qubit, m.outcome as u8);
+        }
     }
 }
 
@@ -403,6 +572,51 @@ fn cli_serve(path: Option<&str>, port_arg: Option<&str>) {
     dashboard::serve(data, port);
 }
 
+/// `astracore worker --port <N>` — start a distributed simulation worker node.
+fn cli_worker(args: &[String]) {
+    let mut port: u16 = 7700;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--port" | "-p" => {
+                i += 1;
+                port = args.get(i)
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or_else(|| {
+                        eprintln!("--port requires a valid port number");
+                        std::process::exit(1);
+                    });
+            }
+            flag => { eprintln!("Unknown worker flag '{flag}'"); std::process::exit(1); }
+        }
+        i += 1;
+    }
+    if let Err(e) = astracore::simulator::dist::worker::run_worker_server(port) {
+        eprintln!("Worker error: {e}");
+        std::process::exit(1);
+    }
+}
+
+/// `astracore devices` — list available simulation devices.
+fn cli_devices() {
+    println!("━━━ AstraCore — Available Simulation Devices ━━━━━━━");
+    for dev in astracore::simulator::list_gpu_devices() {
+        println!("  {dev}");
+    }
+    println!();
+    println!("GPU features compiled in:");
+
+    #[cfg(feature = "wgpu")]
+    println!("  wgpu  ✓  (cross-platform WebGPU via Vulkan/Metal/DX12)");
+    #[cfg(not(feature = "wgpu"))]
+    println!("  wgpu  ✗  (rebuild with --features wgpu to enable)");
+
+    #[cfg(feature = "cuda")]
+    println!("  cuda  ✓  (NVIDIA CUDA via cudarc)");
+    #[cfg(not(feature = "cuda"))]
+    println!("  cuda  ✗  (rebuild with --features cuda to enable)");
+}
+
 fn print_help() {
     println!("Usage: astracore [COMMAND] [ARGS]\n");
     println!("Commands:");
@@ -412,11 +626,20 @@ fn print_help() {
     println!("       --backend mps [--bond-dim N]  Matrix Product State (50–200+ qubits)");
     println!("       --backend clifford            Stabilizer circuit (unlimited qubits)");
     println!("       --backend sparse              Sparse statevector (low-entanglement)");
+    println!("       --backend gpu                 GPU statevector (needs --features wgpu or cuda)");
+    println!("       --backend wgpu                WebGPU backend (needs --features wgpu)");
+    println!("       --backend cuda                CUDA backend   (needs --features cuda)");
     println!("       --shots N                     Run N times, output measurement histogram");
+    println!("  devices                           List available GPU devices");
+    println!("  worker [--port N]                 Start a distributed worker node (default port 7700)");
+    println!("       run circuit.aql --dist --nodes 'h1:7700,h2:7700'  distributed execution");
     println!("  opt <file.aql>                    Optimize and display the circuit");
     println!("  analyze <file.aql>                Static circuit analysis and profiling");
     println!("  export <file.aql> [out.qasm]      Export circuit to OpenQASM 2.0");
     println!("  import <file.qasm>                Import and run an OpenQASM 2.0 file");
+    println!("  import3 <file.qasm>               Import and run an OpenQASM 3.0 file");
+    println!("  lsp                               Start AQL Language Server (LSP, stdin/stdout)");
+    println!("  dap                               Start AQL Debug Adapter (DAP, stdin/stdout)");
     println!("  dash <file.aql>                   Launch interactive TUI dashboard");
     println!("  report <file.aql> [out.html]      Generate standalone HTML report");
     println!("  serve <file.aql> [port]           Start local HTTP dashboard server");
