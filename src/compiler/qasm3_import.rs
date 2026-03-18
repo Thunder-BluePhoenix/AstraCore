@@ -549,7 +549,7 @@ fn parse_reg_ref(s: &str, line: usize) -> Result<(String, usize), AqlError> {
 }
 
 /// Parse condition like `c[0] == 1` or `c == 1` → (creg_name, bit_index).
-fn parse_condition(cond: &str, line: usize) -> Result<(String, usize), AqlError> {
+fn parse_condition(cond: &str, _line: usize) -> Result<(String, usize), AqlError> {
     // Strip `== 1` or `==1` suffix
     let lhs = if let Some(pos) = cond.find("==") {
         cond[..pos].trim()
@@ -611,7 +611,7 @@ pub(crate) fn parse_angle_expr(expr: &str) -> Option<f64> {
 fn split_gate_and_args(stmt: &str) -> (String, String) {
     let stmt = stmt.trim();
     // If parenthesised angle, find the closing ')' first
-    if let Some(paren_open) = stmt.find('(') {
+    if let Some(_paren_open) = stmt.find('(') {
         if let Some(paren_close) = stmt.find(')') {
             let gate = stmt[..=paren_close].to_string();
             let args = stmt[paren_close + 1..].trim().to_string();
