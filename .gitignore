@@ -36,6 +36,11 @@ astracore/*.so
 .ipynb_checkpoints/
 *.ipynb
 
+# ── VS Code Extension ─────────────────────────────────────────────────────────
+vscode-astracore/node_modules/
+vscode-astracore/out/
+vscode-astracore/*.vsix
+
 # ── IDE / Editor ──────────────────────────────────────────────────────────────
 .claude
 .vscode/settings.json

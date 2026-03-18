@@ -35,7 +35,8 @@ export function activate(context: vscode.ExtensionContext): void {
         clientOptions,
     );
 
-    context.subscriptions.push(client.start());
+    client.start();
+    context.subscriptions.push(client);
 
     // ── Commands ─────────────────────────────────────────────────────────────
     context.subscriptions.push(
